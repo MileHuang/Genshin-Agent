@@ -154,6 +154,9 @@ Copy-Item .env.example .env
 
 ```env
 OPENAI_API_KEY=replace_with_your_key
+OPENAI_MODEL=gpt-5.6-terra
+OPENAI_REASONING_EFFORT=medium
+# AGENT_SYSTEM_PROMPT=Optional one-line override for the built-in English prompt
 ```
 
 Never commit `.env` or API keys to GitHub. Each developer should use their own local credentials.
