@@ -6,7 +6,11 @@ The project combines daily scheduling and travel planning through one shared use
 
 ## Project Status
 
-This repository is in the initial MVP stage. The first milestone is a small end-to-end daily-planning flow using mock calendar data. Real Google Calendar integration, travel planning, and long-term preference learning will be added incrementally.
+This repository now contains the backend core for the first MVP: a Kimi K3
+client, a structured planner agent, mock calendar/preference tools, live
+Open-Meteo weather, a scheduler, deterministic conflict validation, and offline
+tests. Real calendar integration, a frontend, and long-term preference learning
+remain planned.
 
 ## MVP Goal
 
@@ -15,10 +19,11 @@ The first working demo should support this flow:
 1. A user describes tasks for a day in natural language.
 2. The agent reads existing events from a mock calendar tool.
 3. The agent reads mock user preferences.
-4. The agent generates a structured daily-plan draft.
-5. Deterministic Python validation checks for time conflicts.
-6. The frontend displays the draft for user review.
-7. Later iterations record edits and update long-term preferences.
+4. The agent reads live weather when a goal involves travel or outdoor activity.
+5. The agent generates a structured daily-plan draft.
+6. Deterministic Python validation checks for time conflicts.
+7. The frontend displays the draft for user review.
+8. Later iterations record edits and update long-term preferences.
 
 The first milestone does **not** include automatic booking, payment, multi-agent orchestration, vector databases, or direct writes to a real calendar.
 
@@ -62,45 +67,43 @@ Calendar writes must be treated as side effects. The system should generate a dr
 
 ## Technology Stack
 
-- Python 3.12
-- OpenAI Agents SDK
+- Python 3.11+
+- Kimi K3 through the Moonshot HTTP/SSE API
+- Open-Meteo for live geocoding and daily weather forecasts
+- HTTPX for async requests and streaming
 - Pydantic for structured inputs and outputs
-- FastAPI for backend endpoints
-- Streamlit for the initial frontend
-- SQLite for local storage
 - pytest for tests
 - Git and GitHub for collaboration
 
-## Suggested Project Structure
+FastAPI, Streamlit, and SQLite remain planned for later phases.
+
+## Current Project Structure
 
 ```text
-AIAgentProject/
-|-- app/
-|   |-- main.py
-|   |-- agent.py
-|   |-- schemas.py
-|   |-- api/
-|   |   `-- routes.py
-|   |-- tools/
-|   |   |-- calendar.py
-|   |   `-- memory.py
-|   |-- planning/
-|   |   `-- validator.py
-|   `-- memory/
-|       `-- preference_updater.py
-|-- frontend/
-|   `-- app.py
-|-- data/
+Genshin-Agent/
+|-- agents/
+|   |-- basic_agent.py
+|   `-- planner_agent.py
+|-- config/
+|   `-- settings.py
+|-- tools/
+|   |-- calendar_tool.py
+|   |-- weather_tool.py
+|   |-- preference_tool.py
+|   |-- scheduler_tool.py
+|   `-- validator_tool.py
 |-- tests/
-|   |-- test_agent.py
-|   `-- test_validator.py
+|   |-- test_basic_agent.py
+|   |-- test_planner_agent.py
+|   |-- test_calendar_tool.py
+|   |-- test_weather_tool.py
+|   `-- test_daily_pipeline.py
+|-- main.py
 |-- .env.example
 |-- .gitignore
 |-- requirements.txt
 `-- README.md
 ```
-
-The folders above are planned structure and will be created as implementation begins.
 
 ## Local Setup (Windows PowerShell)
 
@@ -116,7 +119,7 @@ If the repository already exists locally, open the folder directly in VS Code.
 ### 2. Create a virtual environment
 
 ```powershell
-py -3.12 -m venv .venv
+py -3.11 -m venv .venv
 ```
 
 ### 3. Activate the environment
@@ -127,19 +130,16 @@ py -3.12 -m venv .venv
 
 ### 4. Install dependencies
 
-After `requirements.txt` is created:
-
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-The initial dependency set is expected to include:
+The core dependency set includes:
 
 ```text
-openai-agents
-fastapi[standard]
-streamlit
+httpx
+pydantic
 python-dotenv
 pytest
 ```
@@ -153,44 +153,41 @@ Copy-Item .env.example .env
 ```
 
 ```env
-OPENAI_API_KEY=replace_with_your_key
-OPENAI_MODEL=gpt-5.6-terra
-OPENAI_REASONING_EFFORT=medium
-# AGENT_SYSTEM_PROMPT=Optional one-line override for the built-in English prompt
+MOONSHOT_API_KEY=replace_with_your_moonshot_api_key
+KIMI_MODEL=kimi-k3
+KIMI_BASE_URL=https://api.moonshot.ai/v1
+KIMI_REASONING_EFFORT=max
+WEATHER_PROVIDER=open-meteo
+WEATHER_TIMEOUT_SECONDS=20
 ```
+
+Open-Meteo does not require an API key for this MVP. Set
+`WEATHER_PROVIDER=mock` when working completely offline.
 
 Never commit `.env` or API keys to GitHub. Each developer should use their own local credentials.
 
-## Planned Development Commands
+## Development Commands
 
-These commands will work after the corresponding application files are implemented.
-
-Run the backend:
+Run the Kimi planning demo:
 
 ```powershell
-fastapi dev app/main.py
-```
-
-Run the frontend:
-
-```powershell
-streamlit run frontend/app.py
+python main.py
 ```
 
 Run tests:
 
 ```powershell
-pytest
+python -m pytest -q
 ```
 
 ## Initial Data Contracts
 
-The first implementation should define these Pydantic models before building the UI or connecting real services:
+The planner currently defines structured Pydantic models for `PlanItem`,
+`PlanValidation`, and `DailyPlan`. The following broader contracts remain part
+of the planned application architecture:
 
 - `Task`
 - `CalendarEvent`
-- `PlanItem`
-- `DailyPlan`
 - `EditEvent`
 - `UserPreference`
 
@@ -202,15 +199,19 @@ Every layer should share these contracts:
 - The frontend renders the same plan structure.
 - The database stores the plan and subsequent edits.
 
-## Initial Mock Tools
+## Tool Providers
 
-The first agent should use mock implementations of:
+The planner currently uses:
 
 - `get_calendar_events(date)`
 - `get_user_preferences(user_id)`
 - `schedule_tasks(tasks, events, preferences)`
+- `get_weather(location, date)`
 
-Mock tools keep the first milestone independent from Google OAuth and other external-service setup. Real integrations should replace the tool internals later without changing their public input and output contracts.
+Calendar and preference data are mocked. Weather uses Open-Meteo by default and
+retains a deterministic mock provider for offline tests. The provider interfaces
+allow future APIs to replace the current implementations without changing the
+planner-facing contracts.
 
 ## Memory Design
 
