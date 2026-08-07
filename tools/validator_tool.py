@@ -1,24 +1,32 @@
-# tools/validator_tool.py
+"""
+日程验证工具
 
+检查日程是否存在时间冲突。
+"""
 
 from datetime import datetime
 
 
-def validate_schedule(schedule):
+TOOL_NAME = "validate_schedule"
+
+TOOL_DESCRIPTION = """
+检查生成的日程是否存在时间冲突。
+"""
+
+
+def validate_schedule(
+        schedule: list[dict]
+) -> dict:
     """
-    检查日程是否存在时间冲突
+    验证日程。
 
     Args:
         schedule:
-            Scheduler Tool 输出的日程列表
+            日程列表
 
     Returns:
-        {
-            "是否有效": True/False,
-            "冲突": []
-        }
+        验证结果
     """
-
 
     conflicts = []
 
@@ -53,7 +61,6 @@ def validate_schedule(schedule):
             )
 
 
-            # 判断时间重叠
             if start1 < end2 and start2 < end1:
 
                 conflicts.append(

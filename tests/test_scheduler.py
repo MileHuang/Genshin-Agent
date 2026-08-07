@@ -9,7 +9,9 @@ if __name__ == "__main__":
         "阅读论文"
     ]
 
-    schedule = create_schedule(tasks)
 
-    for item in schedule:
+    result = create_schedule(tasks)
+
+
+    for item in result["schedule"]:
         print(item)

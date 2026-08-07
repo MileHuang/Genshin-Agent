@@ -3,7 +3,6 @@ from tools.validator_tool import validate_schedule
 
 if __name__ == "__main__":
 
-
     schedule = [
 
         {

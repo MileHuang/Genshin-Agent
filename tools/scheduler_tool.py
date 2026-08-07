@@ -1,9 +1,35 @@
+"""
+日程生成工具
+
+根据任务列表生成时间安排。
+"""
+
 from datetime import datetime, timedelta
 
 
-def create_schedule(tasks, start_time="09:00"):
+TOOL_NAME = "create_schedule"
+
+TOOL_DESCRIPTION = """
+根据用户任务列表生成一天的时间安排。
+"""
+
+
+def create_schedule(
+        tasks: list[str],
+        start_time: str = "09:00"
+) -> dict:
     """
-    根据任务列表生成日程安排
+    创建日程。
+
+    Args:
+        tasks:
+            用户需要完成的任务
+
+        start_time:
+            开始时间
+
+    Returns:
+        包含schedule的字典
     """
 
     schedule = []
@@ -29,4 +55,6 @@ def create_schedule(tasks, start_time="09:00"):
         current_time = end_time
 
 
-    return schedule
+    return {
+        "schedule": schedule
+    }
