@@ -6,11 +6,12 @@ The project combines daily scheduling and travel planning through one shared use
 
 ## Project Status
 
-This repository now contains the backend core for the first MVP: a Kimi K3
-client, a structured planner agent, mock calendar/preference tools, live
-Open-Meteo weather, a scheduler, deterministic conflict validation, and offline
-tests. Real calendar integration, a frontend, and long-term preference learning
-remain planned.
+This repository now contains the backend core for the first MVP: an OpenAI
+Agents SDK planner, a Kimi K3 model configured through Moonshot's
+OpenAI-compatible API, mock calendar/preference tools, live Open-Meteo weather,
+a scheduler, deterministic conflict validation, and offline tests. Real
+calendar integration, a frontend, and long-term preference learning remain
+planned.
 
 ## MVP Goal
 
@@ -25,14 +26,16 @@ The first working demo should support this flow:
 7. The frontend displays the draft for user review.
 8. Later iterations record edits and update long-term preferences.
 
-The first milestone does **not** include automatic booking, payment, multi-agent orchestration, vector databases, or direct writes to a real calendar.
+The first milestone does **not** include automatic booking, payment,
+multi-agent handoffs, vector databases, or direct writes to a real calendar.
 
 ## Core Idea
 
 ```text
 User request
-    -> Planner Agent
-    -> Calendar / Memory tools
+    -> OpenAI Agents SDK Runner
+    -> Personal Planner Agent
+    -> Calendar / Memory / Weather tools
     -> Structured plan
     -> Python validation
     -> User review and edits
@@ -41,7 +44,10 @@ User request
     -> Better future plans
 ```
 
-The LLM is responsible for understanding requests, selecting tools, and explaining plans. Regular Python code is responsible for hard constraints such as time conflicts, durations, validation, and database writes.
+The OpenAI Agents SDK is responsible for the agent loop, model invocation,
+function-tool calls, and structured output. Regular Python code is responsible
+for hard constraints such as time conflicts, durations, validation, and database
+writes.
 
 ## Proposed Architecture
 
@@ -50,6 +56,9 @@ Streamlit frontend
         |
         v
 FastAPI backend
+        |
+        v
+OpenAI Agents SDK Runner
         |
         v
 Personal Planner Agent
@@ -68,9 +77,10 @@ Calendar writes must be treated as side effects. The system should generate a dr
 ## Technology Stack
 
 - Python 3.11+
-- Kimi K3 through the OpenAI Python SDK and Moonshot-compatible API
+- OpenAI Agents SDK for agent orchestration, tool calling, and structured output
+- Kimi K3 through Moonshot's OpenAI-compatible Chat Completions API
 - Open-Meteo for live geocoding and daily weather forecasts
-- OpenAI Python SDK for async chat, streaming, and structured output
+- OpenAI Python SDK as the underlying compatible API client
 - HTTPX for injectable offline transports and live weather requests
 - Pydantic for structured inputs and outputs
 - pytest for tests
@@ -82,8 +92,7 @@ FastAPI, Streamlit, and SQLite remain planned for later phases.
 
 ```text
 Genshin-Agent/
-|-- agents/
-|   |-- basic_agent.py
+|-- planner_agents/
 |   `-- planner_agent.py
 |-- config/
 |   `-- settings.py
@@ -91,10 +100,8 @@ Genshin-Agent/
 |   |-- calendar_tool.py
 |   |-- weather_tool.py
 |   |-- preference_tool.py
-|   |-- scheduler_tool.py
 |   `-- validator_tool.py
 |-- tests/
-|   |-- test_basic_agent.py
 |   |-- test_planner_agent.py
 |   |-- test_calendar_tool.py
 |   |-- test_weather_tool.py
@@ -141,6 +148,7 @@ The core dependency set includes:
 ```text
 httpx
 openai
+openai-agents
 pydantic
 python-dotenv
 pytest
@@ -170,7 +178,7 @@ Never commit `.env` or API keys to GitHub. Each developer should use their own l
 
 ## Development Commands
 
-Run the Kimi planning demo:
+Run the OpenAI Agents SDK planning demo:
 
 ```powershell
 python main.py

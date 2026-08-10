@@ -42,6 +42,7 @@ dependencies:
       - jsonschema-specifications==2025.9.1
       - mcp==1.29.0
       - openai==2.53.0
+      - openai-agents==0.19.4
       - pip==26.2.1
       - pluggy==1.6.0
       - pycparser==3.0

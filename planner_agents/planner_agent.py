@@ -1,4 +1,4 @@
-"""Planner agent that combines Kimi reasoning with deterministic tools."""
+"""Planner agent built on the OpenAI Agents SDK with deterministic validation."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any, Literal, Protocol
 
+from openai import AsyncOpenAI
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -18,6 +19,13 @@ from pydantic import (
     model_validator,
 )
 
+from config.settings import (
+    AGENT_SYSTEM_PROMPT,
+    KIMI_BASE_URL,
+    KIMI_MODEL,
+    KIMI_TIMEOUT_SECONDS,
+    MOONSHOT_API_KEY,
+)
 from tools.calendar_tool import get_calendar_events
 from tools.preference_tool import get_user_preferences
 from tools.validator_tool import validate_schedule
@@ -25,7 +33,7 @@ from tools.weather_tool import get_weather
 
 
 class TextAgent(Protocol):
-    """Minimal interface PlannerAgent needs from a language model agent."""
+    """Minimal test-double interface for offline planner tests."""
 
     async def run(self, prompt: str) -> str: ...
 
@@ -192,12 +200,13 @@ CJK_WEATHER_KEYWORDS = {
 
 
 class PlannerAgent:
-    """Use Kimi plus mock tools to produce validated structured daily plans."""
+    """Use OpenAI Agents SDK tools plus deterministic checks for daily plans."""
 
     def __init__(
         self,
-        basic_agent: TextAgent,
+        text_agent: TextAgent | None = None,
         *,
+        sdk_model: Any | None = None,
         calendar_getter: Callable[..., Any] = get_calendar_events,
         weather_getter: Callable[..., Any] = get_weather,
         preference_getter: Callable[..., Any] = get_user_preferences,
@@ -205,7 +214,8 @@ class PlannerAgent:
     ) -> None:
         if max_revision_attempts < 0:
             raise ValueError("max_revision_attempts must be non-negative")
-        self.basic_agent = basic_agent
+        self.text_agent = text_agent
+        self.sdk_model = sdk_model
         self.calendar_getter = calendar_getter
         self.weather_getter = weather_getter
         self.preference_getter = preference_getter
@@ -229,6 +239,28 @@ class PlannerAgent:
         if location is not None and not clean_location:
             raise ValueError("location must not be blank when provided")
 
+        if self.text_agent is None:
+            return await self._create_daily_plan_with_sdk(
+                clean_goal,
+                plan_date=plan_date,
+                location=clean_location,
+            )
+
+        return await self._create_daily_plan_with_text_agent(
+            clean_goal,
+            plan_date=plan_date,
+            location=clean_location,
+        )
+
+    async def _create_daily_plan_with_text_agent(
+        self,
+        clean_goal: str,
+        *,
+        plan_date: str,
+        location: str | None,
+    ) -> DailyPlan:
+        """Legacy-compatible path used by fast offline tests."""
+
         calendar_events = await self._call_tool(
             "calendar",
             self.calendar_getter,
@@ -243,11 +275,11 @@ class PlannerAgent:
         weather_context: dict[str, Any] | None = None
         routing_assumptions: list[str] = []
         if self._goal_needs_weather(clean_goal):
-            if clean_location:
+            if location:
                 weather_context = await self._call_tool(
                     "weather",
                     self.weather_getter,
-                    clean_location,
+                    location,
                     plan_date,
                 )
                 tools_used.append("weather")
@@ -291,10 +323,82 @@ class PlannerAgent:
             f"Kimi could not produce a conflict-free plan: {conflict_text}"
         )
 
+    async def _create_daily_plan_with_sdk(
+        self,
+        clean_goal: str,
+        *,
+        plan_date: str,
+        location: str | None,
+    ) -> DailyPlan:
+        """Run the planner through OpenAI Agents SDK Agent/Runner/tools."""
+
+        sdk_agent, tool_state, routing_assumptions = self._build_sdk_agent(
+            clean_goal,
+            plan_date=plan_date,
+            location=location,
+        )
+        initial_prompt = self._build_sdk_prompt(
+            goal=clean_goal,
+            target_date=plan_date,
+            location=location,
+            needs_weather=self._goal_needs_weather(clean_goal),
+        )
+
+        conflicts: list[str] = []
+        last_draft: PlanDraft | None = None
+        for attempt in range(self.max_revision_attempts + 1):
+            prompt = initial_prompt
+            if attempt:
+                prompt = self._build_sdk_revision_prompt(
+                    goal=clean_goal,
+                    target_date=plan_date,
+                    previous_draft=last_draft,
+                    conflicts=conflicts,
+                )
+
+            draft = await self._generate_draft_with_sdk(sdk_agent, prompt)
+            last_draft = draft
+            calendar_events = tool_state["calendar_events"]
+            if calendar_events is None:
+                calendar_events = await self._call_tool(
+                    "calendar",
+                    self.calendar_getter,
+                    plan_date,
+                )
+                tool_state["calendar_events"] = calendar_events
+
+            validation = self._validate_draft(draft, calendar_events)
+            if validation.is_valid:
+                tools_used = [
+                    name
+                    for name in ("calendar", "preferences", "weather")
+                    if tool_state[f"{name}_used"]
+                ]
+                weather_context = tool_state["weather"]
+                if weather_context is None and "weather" not in tools_used:
+                    weather_context = None
+                return DailyPlan(
+                    date=plan_date,
+                    goal=clean_goal,
+                    summary=draft.summary,
+                    schedule=draft.schedule,
+                    assumptions=draft.assumptions + routing_assumptions,
+                    tools_used=tools_used,
+                    calendar_events_considered=len(calendar_events),
+                    weather=weather_context,
+                    validation=validation,
+                )
+            conflicts = validation.conflicts
+
+        conflict_text = "; ".join(conflicts) or "unknown conflict"
+        raise PlanValidationError(
+            f"Kimi could not produce a conflict-free plan: {conflict_text}"
+        )
+
     async def _generate_draft(self, prompt: str) -> PlanDraft:
         """Prefer SDK structured output and retain text-agent compatibility."""
 
-        structured_runner = getattr(self.basic_agent, "run_structured", None)
+        structured_runner = getattr(self.text_agent, "run_structured", None)
         if callable(structured_runner):
             result = await structured_runner(prompt, PlanDraft)
             try:
@@ -304,8 +408,150 @@ class PlannerAgent:
                     f"Kimi returned an invalid daily-plan structure: {exc}"
                 ) from exc
 
-        raw_output = await self.basic_agent.run(prompt)
+        raw_output = await self.text_agent.run(prompt)
         return self._parse_draft(raw_output)
+
+    async def _generate_draft_with_sdk(
+        self,
+        sdk_agent: Any,
+        prompt: str,
+    ) -> PlanDraft:
+        """Run the OpenAI Agents SDK agent and normalize its structured output."""
+
+        try:
+            from agents import Runner
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenAI Agents SDK is not installed. Install dependencies with "
+                "`python -m pip install -r requirements.txt`."
+            ) from exc
+
+        result = await Runner.run(sdk_agent, prompt)
+        output = result.final_output
+        if isinstance(output, PlanDraft):
+            return output
+        if isinstance(output, BaseModel):
+            output = output.model_dump()
+        try:
+            return PlanDraft.model_validate(output)
+        except ValidationError as exc:
+            raise PlannerOutputError(
+                f"Agents SDK returned an invalid daily-plan structure: {exc}"
+            ) from exc
+
+    def _build_sdk_agent(
+        self,
+        goal: str,
+        *,
+        plan_date: str,
+        location: str | None,
+    ) -> tuple[Any, dict[str, Any], list[str]]:
+        try:
+            from agents import (
+                Agent,
+                OpenAIChatCompletionsModel,
+                function_tool,
+                set_tracing_disabled,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenAI Agents SDK is not installed. Install dependencies with "
+                "`python -m pip install -r requirements.txt`."
+            ) from exc
+
+        set_tracing_disabled(disabled=True)
+        tool_state: dict[str, Any] = {
+            "calendar_events": None,
+            "preferences": None,
+            "weather": None,
+            "calendar_used": False,
+            "preferences_used": False,
+            "weather_used": False,
+        }
+
+        @function_tool
+        async def get_calendar_context() -> list[dict[str, Any]]:
+            """Return fixed calendar events for the requested planning date."""
+
+            tool_state["calendar_used"] = True
+            events = await self._call_tool(
+                "calendar",
+                self.calendar_getter,
+                plan_date,
+            )
+            tool_state["calendar_events"] = events
+            return events
+
+        @function_tool
+        async def get_preferences_context() -> dict[str, Any]:
+            """Return user planning preferences such as routine and focus time."""
+
+            tool_state["preferences_used"] = True
+            preferences = await self._call_tool(
+                "preferences",
+                self.preference_getter,
+            )
+            tool_state["preferences"] = preferences
+            return preferences
+
+        tools = [get_calendar_context, get_preferences_context]
+        routing_assumptions: list[str] = []
+        if self._goal_needs_weather(goal):
+            if location:
+
+                @function_tool
+                async def get_weather_context() -> dict[str, Any]:
+                    """Return the weather forecast for the requested location/date."""
+
+                    tool_state["weather_used"] = True
+                    weather = await self._call_tool(
+                        "weather",
+                        self.weather_getter,
+                        location,
+                        plan_date,
+                    )
+                    tool_state["weather"] = weather
+                    return weather
+
+                tools.append(get_weather_context)
+            else:
+                routing_assumptions.append(
+                    "Weather was not checked because no location was provided."
+                )
+
+        model = self.sdk_model
+        if model is None:
+            if not MOONSHOT_API_KEY:
+                raise ValueError(
+                    "Missing MOONSHOT_API_KEY. Add it to .env or the process "
+                    "environment."
+                )
+            client = AsyncOpenAI(
+                api_key=MOONSHOT_API_KEY,
+                base_url=KIMI_BASE_URL,
+                timeout=KIMI_TIMEOUT_SECONDS,
+            )
+            model = OpenAIChatCompletionsModel(
+                model=KIMI_MODEL,
+                openai_client=client,
+            )
+
+        instructions = (
+            f"{AGENT_SYSTEM_PROMPT}\n\n{PLANNER_PROMPT}\n\n"
+            "Use the provided function tools for calendar and preference context "
+            "before producing a final answer. Use the weather tool when it is "
+            "available and the goal includes outdoor, travel, commute, or "
+            "weather-sensitive activity. The final answer must match the "
+            "structured output schema."
+        )
+        sdk_agent = Agent(
+            name="Personal Planner Agent",
+            instructions=instructions,
+            model=model,
+            tools=tools,
+            output_type=PlanDraft,
+        )
+        return sdk_agent, tool_state, routing_assumptions
 
     @staticmethod
     def _goal_needs_weather(goal: str) -> bool:
@@ -351,11 +597,57 @@ class PlannerAgent:
         )
 
     @staticmethod
+    def _build_sdk_prompt(
+        *,
+        goal: str,
+        target_date: str,
+        location: str | None,
+        needs_weather: bool,
+    ) -> str:
+        weather_instruction = (
+            "Call the weather tool before drafting because this goal is "
+            "weather-sensitive."
+            if needs_weather and location
+            else "No weather tool is available for this request."
+            if needs_weather
+            else "Weather is not needed for this request."
+        )
+        return (
+            f"Create a daily plan for {target_date}.\n"
+            f"Goal: {goal}\n"
+            f"Location: {location or 'not provided'}\n"
+            "Call the calendar and preference tools before drafting. "
+            f"{weather_instruction}"
+        )
+
+    @staticmethod
     def _build_revision_prompt(conflicts: list[str]) -> str:
         return (
             "Revise your previous JSON plan to remove these deterministic "
             f"conflicts: {json.dumps(conflicts, ensure_ascii=False)}. "
             "Return only the corrected JSON object using exactly the same schema."
+        )
+
+    @staticmethod
+    def _build_sdk_revision_prompt(
+        *,
+        goal: str,
+        target_date: str,
+        previous_draft: PlanDraft | None,
+        conflicts: list[str],
+    ) -> str:
+        previous = (
+            previous_draft.model_dump(mode="json") if previous_draft else None
+        )
+        return (
+            f"Revise the daily plan for {target_date}.\n"
+            f"Goal: {goal}\n"
+            "The previous draft had deterministic conflicts:\n"
+            f"{json.dumps(conflicts, ensure_ascii=False)}\n"
+            "Previous draft:\n"
+            f"{json.dumps(previous, ensure_ascii=False, indent=2)}\n"
+            "Call calendar and preference tools again if needed, then return a "
+            "corrected structured plan with no overlaps."
         )
 
     @staticmethod

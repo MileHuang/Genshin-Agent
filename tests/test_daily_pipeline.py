@@ -1,10 +1,7 @@
 import asyncio
 import json
 
-import httpx
-
-from agents.basic_agent import BasicAgent
-from agents.planner_agent import PlannerAgent
+from planner_agents.planner_agent import PlannerAgent
 from tools.calendar_tool import get_calendar_events
 from tools.validator_tool import validate_schedule
 
@@ -75,58 +72,3 @@ def test_pipeline_validator_detects_plan_calendar_overlap():
 
     assert result["是否有效"] is False
     assert any("Team check-in" in conflict for conflict in result["冲突"])
-
-
-def test_basic_agent_and_planner_integrate_without_live_network():
-    model_output = json.dumps(
-        {
-            "summary": "Protect fixed events and complete focused work.",
-            "schedule": [
-                {
-                    "title": "Focused study",
-                    "start_time": "09:00",
-                    "end_time": "10:00",
-                    "priority": "high",
-                    "category": "study",
-                    "notes": "Finish one measurable outcome.",
-                }
-            ],
-            "assumptions": [],
-        }
-    )
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        request_payload = json.loads(request.content)
-        assert request_payload["model"] == "kimi-k3"
-        assert request_payload["stream"] is False
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "reasoning_content": "mock reasoning",
-                            "content": model_output,
-                        }
-                    }
-                ]
-            },
-        )
-
-    async def scenario():
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        basic_agent = BasicAgent(api_key="test-key", http_client=client)
-        try:
-            planner = PlannerAgent(basic_agent)
-            return await planner.create_daily_plan(
-                "Study efficiently",
-                target_date="2026-08-07",
-            )
-        finally:
-            await client.aclose()
-
-    plan = asyncio.run(scenario())
-
-    assert plan.validation.is_valid is True
-    assert plan.schedule[0].title == "Focused study"
