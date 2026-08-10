@@ -68,9 +68,10 @@ Calendar writes must be treated as side effects. The system should generate a dr
 ## Technology Stack
 
 - Python 3.11+
-- Kimi K3 through the Moonshot HTTP/SSE API
+- Kimi K3 through the OpenAI Python SDK and Moonshot-compatible API
 - Open-Meteo for live geocoding and daily weather forecasts
-- HTTPX for async requests and streaming
+- OpenAI Python SDK for async chat, streaming, and structured output
+- HTTPX for injectable offline transports and live weather requests
 - Pydantic for structured inputs and outputs
 - pytest for tests
 - Git and GitHub for collaboration
@@ -139,6 +140,7 @@ The core dependency set includes:
 
 ```text
 httpx
+openai
 pydantic
 python-dotenv
 pytest

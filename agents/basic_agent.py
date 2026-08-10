@@ -1,13 +1,14 @@
-"""Async Kimi K3 client with conversation and streaming support."""
+"""Async Kimi K3 client built on the OpenAI-compatible Python SDK."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from copy import deepcopy
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
+from openai import AsyncOpenAI, OpenAIError
+from pydantic import BaseModel
 
 from config.settings import (
     AGENT_SYSTEM_PROMPT,
@@ -20,6 +21,7 @@ from config.settings import (
 
 
 Message = dict[str, Any]
+StructuredResponse = TypeVar("StructuredResponse", bound=BaseModel)
 VALID_ROLES = {"system", "user", "assistant", "tool"}
 VALID_REASONING_EFFORTS = {"low", "high", "max"}
 
@@ -31,9 +33,9 @@ class KimiAPIError(RuntimeError):
 class BasicAgent:
     """A small async Kimi K3 agent that owns conversation history.
 
-    The implementation calls Moonshot's HTTP API directly with ``httpx``. It
-    does not depend on the OpenAI SDK. A custom ``http_client`` can be injected
-    for offline tests or a future transport implementation.
+    Moonshot exposes an OpenAI-compatible Chat Completions API, so transport,
+    response models, and streaming are delegated to ``AsyncOpenAI``. A custom
+    SDK or HTTP client can still be injected for offline tests.
     """
 
     def __init__(
@@ -45,6 +47,7 @@ class BasicAgent:
         reasoning_effort: str = KIMI_REASONING_EFFORT,
         system_prompt: str = AGENT_SYSTEM_PROMPT,
         timeout_seconds: float = KIMI_TIMEOUT_SECONDS,
+        sdk_client: AsyncOpenAI | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         resolved_api_key = api_key or MOONSHOT_API_KEY
@@ -66,10 +69,14 @@ class BasicAgent:
         self.base_url = base_url.rstrip("/")
         self.reasoning_effort = reasoning_effort
         self._system_prompt = system_prompt.strip()
-        self._endpoint = f"{self.base_url}/chat/completions"
-        self._owns_http_client = http_client is None
-        self._http_client = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds)
+        if sdk_client is not None and http_client is not None:
+            raise ValueError("sdk_client and http_client cannot both be provided")
+        self._owns_sdk_client = sdk_client is None and http_client is None
+        self._sdk_client = sdk_client or AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=timeout_seconds,
+            http_client=http_client,
         )
         self._messages: list[Message] = []
         self.reset_messages()
@@ -115,27 +122,65 @@ class BasicAgent:
         """Send a prompt asynchronously and return the final answer text."""
 
         request_messages = self._messages_for_prompt(prompt)
-        payload = self._build_payload(request_messages, stream=False)
 
         try:
-            response = await self._http_client.post(
-                self._endpoint,
-                headers=self._request_headers(),
-                json=payload,
+            response = await self._sdk_client.chat.completions.create(
+                model=self.model,
+                messages=request_messages,
+                stream=False,
+                extra_body=self._kimi_request_options(),
             )
-        except httpx.HTTPError as exc:
+        except OpenAIError as exc:
             raise KimiAPIError(f"Kimi request failed: {exc}") from exc
 
-        self._raise_for_status(response)
         try:
-            data = response.json()
-            raw_message = data["choices"][0]["message"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raw_message = response.choices[0].message.model_dump(
+                exclude_unset=True
+            )
+        except (AttributeError, IndexError, TypeError) as exc:
             raise KimiAPIError("Kimi returned an invalid chat response") from exc
 
         assistant_message = self._normalise_assistant_message(raw_message)
         self._messages = request_messages + [assistant_message]
         return assistant_message.get("content") or ""
+
+    async def run_structured(
+        self,
+        prompt: str,
+        response_model: type[StructuredResponse],
+    ) -> StructuredResponse:
+        """Return a Pydantic-validated response using SDK structured output."""
+
+        request_messages = self._messages_for_prompt(prompt)
+        try:
+            response = await self._sdk_client.chat.completions.parse(
+                model=self.model,
+                messages=request_messages,
+                response_format=response_model,
+                extra_body=self._kimi_request_options(),
+            )
+        except OpenAIError as exc:
+            raise KimiAPIError(f"Kimi structured request failed: {exc}") from exc
+
+        try:
+            raw_message = response.choices[0].message
+            parsed = raw_message.parsed
+            assistant_message = self._normalise_assistant_message(
+                raw_message.model_dump(
+                    exclude_unset=True,
+                    exclude={"parsed"},
+                    warnings=False,
+                )
+            )
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise KimiAPIError(
+                "Kimi returned an invalid structured response"
+            ) from exc
+
+        if parsed is None:
+            raise KimiAPIError("Kimi did not return the requested structure")
+        self._messages = request_messages + [assistant_message]
+        return parsed
 
     async def stream(self, prompt: str) -> AsyncIterator[str]:
         """Yield final-answer text deltas while retaining full Kimi history.
@@ -146,42 +191,27 @@ class BasicAgent:
         """
 
         request_messages = self._messages_for_prompt(prompt)
-        payload = self._build_payload(request_messages, stream=True)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[int, Message] = {}
-        received_done = False
+        received_finish = False
 
         try:
-            async with self._http_client.stream(
-                "POST",
-                self._endpoint,
-                headers=self._request_headers(),
-                json=payload,
-            ) as response:
-                self._raise_for_status(response)
-
-                async for line in response.aiter_lines():
-                    if not line or line.startswith(":"):
+            response = await self._sdk_client.chat.completions.create(
+                model=self.model,
+                messages=request_messages,
+                stream=True,
+                extra_body=self._kimi_request_options(),
+            )
+            async with response:
+                async for chunk in response:
+                    choices = chunk.choices
+                    if not choices:
                         continue
-                    if not line.startswith("data:"):
-                        continue
-
-                    event_data = line[5:].strip()
-                    if event_data == "[DONE]":
-                        received_done = True
-                        break
-
-                    try:
-                        event = json.loads(event_data)
-                        choices = event.get("choices") or []
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta") or {}
-                    except (json.JSONDecodeError, AttributeError, TypeError) as exc:
-                        raise KimiAPIError(
-                            "Kimi returned an invalid streaming event"
-                        ) from exc
+                    choice = choices[0]
+                    if choice.finish_reason is not None:
+                        received_finish = True
+                    delta = choice.delta.model_dump(exclude_unset=True)
 
                     reasoning = delta.get("reasoning_content")
                     if isinstance(reasoning, str) and reasoning:
@@ -198,11 +228,11 @@ class BasicAgent:
                     )
         except KimiAPIError:
             raise
-        except httpx.HTTPError as exc:
+        except OpenAIError as exc:
             raise KimiAPIError(f"Kimi streaming request failed: {exc}") from exc
 
-        if not received_done:
-            raise KimiAPIError("Kimi stream ended before the [DONE] event")
+        if not received_finish:
+            raise KimiAPIError("Kimi stream ended before a finish event")
 
         assistant_message: Message = {
             "role": "assistant",
@@ -218,10 +248,10 @@ class BasicAgent:
         self._messages = request_messages + [assistant_message]
 
     async def aclose(self) -> None:
-        """Close the internally-created HTTP client."""
+        """Close the internally-created OpenAI SDK client."""
 
-        if self._owns_http_client:
-            await self._http_client.aclose()
+        if self._owns_sdk_client:
+            await self._sdk_client.close()
 
     async def __aenter__(self) -> BasicAgent:
         return self
@@ -234,24 +264,10 @@ class BasicAgent:
             raise ValueError("prompt must not be blank")
         return self.messages + [{"role": "user", "content": prompt.strip()}]
 
-    def _build_payload(
-        self,
-        messages: list[Message],
-        *,
-        stream: bool,
-    ) -> dict[str, Any]:
-        return {
-            "model": self.model,
-            "reasoning_effort": self.reasoning_effort,
-            "messages": messages,
-            "stream": stream,
-        }
-
-    def _request_headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def _kimi_request_options(self) -> dict[str, str]:
+        # ``max`` is a Kimi extension that is not present in every OpenAI SDK
+        # type definition. ``extra_body`` still sends it as a top-level field.
+        return {"reasoning_effort": self.reasoning_effort}
 
     @staticmethod
     def _normalise_assistant_message(raw_message: object) -> Message:
@@ -315,18 +331,6 @@ class BasicAgent:
                 value = function_fragment.get(field)
                 if isinstance(value, str) and value:
                     target_function[field] = f"{target_function.get(field, '')}{value}"
-
-    @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
-        if not response.is_error:
-            return
-        detail = response.text.strip()
-        if len(detail) > 500:
-            detail = f"{detail[:500]}..."
-        suffix = f": {detail}" if detail else ""
-        raise KimiAPIError(
-            f"Kimi API returned HTTP {response.status_code}{suffix}"
-        )
 
 
 _default_agent: BasicAgent | None = None

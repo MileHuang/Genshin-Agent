@@ -3,6 +3,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
 from agents.basic_agent import BasicAgent, KimiAPIError
 
@@ -54,6 +55,51 @@ def test_run_sends_kimi_k3_request_and_records_complete_history():
     assert history[-1]["content"] == "A practical plan"
 
 
+def test_run_structured_uses_sdk_schema_and_returns_pydantic_model():
+    requests: list[dict] = []
+
+    class Answer(BaseModel):
+        title: str
+        count: int
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"title":"Study","count":2}',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    async def scenario() -> tuple[Answer, list[dict]]:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        agent = BasicAgent(
+            api_key="test-key",
+            reasoning_effort="max",
+            http_client=client,
+        )
+        try:
+            result = await agent.run_structured("Make a plan", Answer)
+            return result, agent.messages
+        finally:
+            await client.aclose()
+
+    result, history = asyncio.run(scenario())
+
+    assert result == Answer(title="Study", count=2)
+    assert requests[0]["response_format"]["type"] == "json_schema"
+    assert requests[0]["reasoning_effort"] == "max"
+    assert history[-1]["content"] == '{"title":"Study","count":2}'
+
+
 def test_stream_yields_answer_content_and_preserves_reasoning():
     stream_body = """data: {"choices":[{"delta":{"reasoning_content":"think "}}]}
 
@@ -64,6 +110,8 @@ data: {"choices":[{"delta":{"content":"Hello "}}]}
 data: {"choices":[]}
 
 data: {"choices":[{"delta":{"content":"world"}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 
@@ -106,7 +154,7 @@ def test_stream_failure_does_not_commit_partial_history():
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         agent = BasicAgent(api_key="test-key", http_client=client)
         try:
-            with pytest.raises(KimiAPIError, match=r"before the \[DONE\]"):
+            with pytest.raises(KimiAPIError, match="before a finish event"):
                 async for _ in agent.stream("Incomplete stream"):
                     pass
             return agent.messages

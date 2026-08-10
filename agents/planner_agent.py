@@ -270,8 +270,7 @@ class PlannerAgent:
             if attempt:
                 prompt = self._build_revision_prompt(conflicts)
 
-            raw_output = await self.basic_agent.run(prompt)
-            draft = self._parse_draft(raw_output)
+            draft = await self._generate_draft(prompt)
             validation = self._validate_draft(draft, calendar_events)
             if validation.is_valid:
                 return DailyPlan(
@@ -291,6 +290,22 @@ class PlannerAgent:
         raise PlanValidationError(
             f"Kimi could not produce a conflict-free plan: {conflict_text}"
         )
+
+    async def _generate_draft(self, prompt: str) -> PlanDraft:
+        """Prefer SDK structured output and retain text-agent compatibility."""
+
+        structured_runner = getattr(self.basic_agent, "run_structured", None)
+        if callable(structured_runner):
+            result = await structured_runner(prompt, PlanDraft)
+            try:
+                return PlanDraft.model_validate(result)
+            except ValidationError as exc:
+                raise PlannerOutputError(
+                    f"Kimi returned an invalid daily-plan structure: {exc}"
+                ) from exc
+
+        raw_output = await self.basic_agent.run(prompt)
+        return self._parse_draft(raw_output)
 
     @staticmethod
     def _goal_needs_weather(goal: str) -> bool:
