@@ -99,7 +99,8 @@ def test_planner_routes_calendar_preferences_and_weather():
     )
 
     assert result.validation.is_valid is True
-    assert result.tools_used == ["calendar", "preferences", "weather"]
+    assert result.tools_used == ["calendar", "todo", "preferences", "weather"]
+    assert result.todo_items_considered == 3
     assert result.calendar_events_considered == 1
     assert result.weather["condition"] == "Clear"
     assert calendar_calls == ["2026-08-07"]
@@ -128,7 +129,8 @@ def test_planner_skips_weather_for_indoor_goal():
         )
     )
 
-    assert result.tools_used == ["calendar", "preferences"]
+    assert result.tools_used == ["calendar", "todo", "preferences"]
+    assert result.todo_items_considered == 3
     assert result.weather is None
 
 

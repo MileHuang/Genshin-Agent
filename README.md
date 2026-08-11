@@ -1,5 +1,7 @@
 # Personal Planner Agent
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 A personal planning agent that learns from how users organize their daily lives and travel.
 
 The project combines daily scheduling and travel planning through one shared user-preference model. Instead of only remembering what a user says, the system records how the user edits, accepts, deletes, moves, and skips planned activities, then uses that evidence to improve future plans.
@@ -178,11 +180,22 @@ Never commit `.env` or API keys to GitHub. Each developer should use their own l
 
 ## Development Commands
 
-Run the OpenAI Agents SDK planning demo:
+Run the deterministic, fully offline MVP demo (recommended first run):
 
 ```powershell
-python main.py
+python main.py --demo --date 2026-08-07 --location "Madison, WI"
 ```
+
+Run a real Kimi-backed plan after configuring `MOONSHOT_API_KEY`:
+
+```powershell
+python main.py --goal "安排两小时深度学习和一次户外跑步" --date 2026-08-07 --location "Madison, WI"
+```
+
+The command returns a validated JSON `DailyPlan`. `--goal`, `--date`, and
+`--location` are the MVP input surface; `--demo` exercises the complete
+calendar, todo, preference, weather-routing, and conflict-validation pipeline
+without any external model call.
 
 Run tests:
 
@@ -237,14 +250,13 @@ Long-term preferences should not be overwritten after one edit. The preference u
 
 The first milestone is complete when:
 
-- [ ] A fixed natural-language request can be submitted.
-- [ ] The agent calls a mock calendar tool.
-- [ ] The agent calls a mock preference tool.
-- [ ] The agent returns a validated `DailyPlan` object.
-- [ ] The validator detects overlapping events.
-- [ ] A valid plan contains no overlaps with existing events.
-- [ ] The plan can be displayed in a terminal or minimal Streamlit page.
-- [ ] Tests cover at least one valid plan and one conflicting plan.
+- [x] A natural-language request can be submitted from the CLI.
+- [x] The agent reads mock calendar, todo, and preference context.
+- [x] The agent returns a validated `DailyPlan` object.
+- [x] The validator detects overlapping events.
+- [x] A valid plan contains no overlaps with existing events.
+- [x] The plan is displayed as formatted JSON in the terminal.
+- [x] Tests cover valid plans, conflicting plans, and each mock tool.
 
 ## Roadmap
 
