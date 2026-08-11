@@ -13,6 +13,10 @@ a scheduler, deterministic conflict validation, and offline tests. Real
 calendar integration, a frontend, and long-term preference learning remain
 planned.
 
+The repository also contains database-free Phase 1 memory contracts for edit
+evidence and learned-preference snapshots. Preference inference, persistence,
+and planner integration are still planned.
+
 ## MVP Goal
 
 The first working demo should support this flow:
@@ -96,6 +100,9 @@ Genshin-Agent/
 |   `-- planner_agent.py
 |-- config/
 |   `-- settings.py
+|-- memory/
+|   |-- __init__.py
+|   `-- models.py
 |-- tools/
 |   |-- calendar_tool.py
 |   |-- weather_tool.py
@@ -105,7 +112,14 @@ Genshin-Agent/
 |   |-- test_planner_agent.py
 |   |-- test_calendar_tool.py
 |   |-- test_weather_tool.py
+|   |-- test_memory_models.py
 |   `-- test_daily_pipeline.py
+|-- docs/
+|   |-- memory-design.md
+|   `-- phase-1-task-list.md
+|-- .codex/skills/daily-planner-mvp/
+|   |-- agents/openai.yaml
+|   `-- SKILL.md
 |-- main.py
 |-- .env.example
 |-- .gitignore
@@ -192,13 +206,17 @@ python -m pytest -q
 
 ## Initial Data Contracts
 
-The planner currently defines structured Pydantic models for `PlanItem`,
-`PlanValidation`, and `DailyPlan`. The following broader contracts remain part
-of the planned application architecture:
+The planner defines structured Pydantic models for `PlanItem`, `PlanValidation`,
+and `DailyPlan`. The database-free memory draft defines `TimeSlot`, `EditEvent`,
+`BehavioralPreference`, and `ProfileMemory`. See
+[`docs/memory-design.md`](docs/memory-design.md) for the boundary between these
+contracts and the deferred learning/persistence work.
+
+The following broader contracts remain part of the planned application
+architecture:
 
 - `Task`
 - `CalendarEvent`
-- `EditEvent`
 - `UserPreference`
 
 Every layer should share these contracts:
@@ -298,6 +316,12 @@ Recommended workflow:
 6. Merge only after tests pass.
 
 Do not commit API keys, OAuth tokens, `.env`, `.venv`, or local database files.
+
+The issue-ready Phase 1 backlog is maintained in
+[`docs/phase-1-task-list.md`](docs/phase-1-task-list.md). When using Codex for
+repository work, invoke the project-local skill with `$daily-planner-mvp`; it
+captures the current phase boundary, tool integration rules, testing
+expectations, and memory direction.
 
 ## Definition of Project Success
 
