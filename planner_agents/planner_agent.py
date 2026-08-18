@@ -51,6 +51,10 @@ class PlannerToolError(PlannerError):
     """计划工具调用失败时抛出。"""
 
 
+class PlannerConfigurationError(PlannerError):
+    """Required planner configuration is missing or invalid."""
+
+
 class PlanValidationError(PlannerError):
     """模型多次生成后仍然存在确定性冲突时抛出。"""
 
@@ -566,8 +570,9 @@ class PlannerAgent:
         model = self.sdk_model
         if model is None:
             if not MOONSHOT_API_KEY:
-                raise ValueError(
-                    "缺少 MOONSHOT_API_KEY。请添加到 .env 或系统环境变量。"
+                raise PlannerConfigurationError(
+                    "Missing a valid MOONSHOT_API_KEY. Replace the placeholder "
+                    "in .env with your Moonshot API key, or run with --demo."
                 )
             client = AsyncOpenAI(
                 api_key=MOONSHOT_API_KEY,

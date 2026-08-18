@@ -8,7 +8,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-MOONSHOT_API_KEY = os.getenv("MOONSHOT_API_KEY")
+_raw_moonshot_api_key = os.getenv("MOONSHOT_API_KEY", "").strip()
+MOONSHOT_API_KEY = (
+    None
+    if not _raw_moonshot_api_key
+    or _raw_moonshot_api_key == "replace_with_your_moonshot_api_key"
+    else _raw_moonshot_api_key
+)
 KIMI_MODEL = os.getenv("KIMI_MODEL", "kimi-k3")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
 KIMI_REASONING_EFFORT = os.getenv("KIMI_REASONING_EFFORT", "max")

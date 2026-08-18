@@ -6,10 +6,13 @@ import argparse
 import asyncio
 import json
 import re
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from planner_agents.planner_agent import PlannerAgent
+from openai import AuthenticationError
+
+from planner_agents.planner_agent import PlannerAgent, PlannerConfigurationError
 from tools.edit_event import EditEventStore
 from tools.feedback_service import FeedbackService
 from tools.preference_tool import get_user_preferences
@@ -72,7 +75,23 @@ async def run() -> None:
         if args.demo
         else PlannerAgent()
     )
-    plan = await planner.create_daily_plan(args.goal, target_date=args.target_date, location=args.location)
+    try:
+        plan = await planner.create_daily_plan(
+            args.goal,
+            target_date=args.target_date,
+            location=args.location,
+        )
+    except PlannerConfigurationError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except AuthenticationError:
+        print(
+            "Moonshot authentication failed. Check MOONSHOT_API_KEY in .env "
+            "and confirm that the key is active. You can run the offline demo "
+            "with: python main.py --demo",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
     print(plan.model_dump_json(indent=2))
     if args.feedback:
         _collect_feedback(plan, plan_id=f"daily-plan-{plan.date.isoformat()}")

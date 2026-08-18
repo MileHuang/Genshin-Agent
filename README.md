@@ -10,7 +10,8 @@ This repository now contains the backend core for the first MVP: an OpenAI
 Agents SDK planner, a Kimi K3 model configured through Moonshot's
 OpenAI-compatible API, mock calendar/todo/preference tools, live Open-Meteo
 weather, deterministic conflict validation, and offline tests. Real calendar
-integration and a frontend remain planned.
+integration remains planned. A minimal Streamlit frontend is available for
+generating and reviewing validated plans.
 
 The repository also contains Phase 1 memory contracts plus a local JSONL
 feedback flow. Repeated accept, move, skip, and delete evidence can be
@@ -27,7 +28,7 @@ The first working demo should support this flow:
 4. The agent reads live weather when a goal involves travel or outdoor activity.
 5. The agent generates a structured daily-plan draft.
 6. Deterministic Python validation checks for time conflicts.
-7. The CLI displays the draft and can record optional user feedback.
+7. The CLI or Streamlit frontend displays the draft; the CLI can record feedback.
 8. Repeated feedback is aggregated into preferences for later plans.
 
 The first milestone does **not** include automatic booking, payment,
@@ -87,10 +88,11 @@ Calendar writes must be treated as side effects. The system should generate a dr
 - OpenAI Python SDK as the underlying compatible API client
 - HTTPX for injectable offline transports and live weather requests
 - Pydantic for structured inputs and outputs
+- Streamlit for the minimal visual frontend
 - pytest for tests
 - Git and GitHub for collaboration
 
-FastAPI, Streamlit, and SQLite remain planned for later phases.
+FastAPI and SQLite remain planned for later phases.
 
 ## Current Project Structure
 
@@ -129,6 +131,7 @@ Genshin-Agent/
 |   |-- agents/openai.yaml
 |   `-- SKILL.md
 |-- main.py
+|-- frontend.py
 |-- .env.example
 |-- .gitignore
 |-- requirements.txt
@@ -173,6 +176,7 @@ openai
 openai-agents
 pydantic
 python-dotenv
+streamlit
 pytest
 ```
 
@@ -205,6 +209,15 @@ Run the OpenAI Agents SDK planning demo:
 ```powershell
 python main.py
 ```
+
+Run the visual frontend:
+
+```powershell
+python -m streamlit run frontend.py
+```
+
+The frontend starts in offline Demo mode, so it works without an API key.
+Disable Demo mode in the sidebar to use the configured Moonshot model.
 
 Run tests:
 

@@ -86,7 +86,7 @@ Acceptance criteria:
 
 ## P1 - Provide a demo entry point
 
-### [ ] Build the CLI demo loop
+### [x] Build the CLI demo loop
 
 Labels: `phase-1`, `P1`, `demo`
 
@@ -113,7 +113,7 @@ Acceptance criteria:
 - Describes the EditEvent-to-BehavioralPreference direction.
 - Passes the skill validator.
 
-### [ ] Reconcile README after Todo and CLI merge
+### [x] Reconcile README after Todo and CLI merge
 
 Labels: `phase-1`, `P1`, `documentation`
 
@@ -122,6 +122,19 @@ Acceptance criteria:
 - Project tree, tools, setup commands, and current-status claims match the merged code.
 - Phase 1 completion boxes reflect passing tests rather than planned behavior.
 - Deferred features remain clearly separated from the current MVP.
+
+### [x] Add a minimal visual frontend
+
+Labels: `phase-1`, `P1`, `frontend`
+
+Delivered in `frontend.py` with Streamlit.
+
+Acceptance criteria:
+
+- Accepts a goal, date, and optional location.
+- Defaults to a deterministic offline demo.
+- Displays schedule rows, validation, tool usage, weather, and raw JSON.
+- Reports configuration and model-service errors without a traceback.
 
 ## Out of scope for this milestone
 
