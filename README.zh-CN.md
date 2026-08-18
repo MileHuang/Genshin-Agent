@@ -1,287 +1,220 @@
-# 个人规划 Agent
+# Personal Life Agent
+
+> **项目代号：Genshin-Agent**
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-一个能够从用户安排方式中学习的个人规划助手，用于日常日程与旅行规划。系统不仅记录用户说了什么，还会记录用户对计划的接受、移动、删除和跳过操作，并据此改进后续计划。
+一个会逐步理解用户生活方式、并据此持续优化规划的个人 AI 助手。
+
+> **Memory → Preference Learning → Personalized Planning**
 
 ## 项目状态
 
-仓库包含第一版 MVP 的后端核心：基于 OpenAI Agents SDK 的规划 Agent、通过 Moonshot OpenAI 兼容 API 使用的 Kimi K3、模拟日历/待办/偏好工具、Open-Meteo 天气服务、确定性冲突校验器和离线测试。真实日历集成、前端和长期偏好学习将在后续迭代实现。
+项目目前聚焦于 Daily Planner MVP：Planner、受控 Tool Layer、确定性的日程校验、Memory Models 和基础测试。当前最重要的目标是完成学习闭环，让用户对计划的修改能够影响下一次规划。
 
-## MVP 目标
+旅行、目标、健康及更多能力将作为 **Skill** 逐步接入，而不是独立的面向用户的 Agent。
 
-首个可用演示支持以下流程：
+## 项目愿景
 
-1. 用户用自然语言描述当天目标。
-2. Agent 读取模拟日历中的固定事件。
-3. Agent 读取模拟待办事项和用户偏好。
-4. 目标涉及旅行或户外活动时，Agent 读取天气。
-5. Agent 生成结构化日计划草稿。
-6. Python 的确定性校验器检查时间冲突。
-7. 命令行显示草稿供用户审阅。
+大多数 AI 助手每次收到请求都从零开始。真正的个人助手应当具备连续性：它会记住相关上下文，观察用户如何调整计划，并通过反复使用变得更有帮助。
 
-此里程碑不包含自动预订、支付、多 Agent 交接、向量数据库或直接写入真实日历。
+Personal Life Agent 为用户提供同一个一致的助手体验。日常规划、旅行、目标、健康和未来的其他领域能力，都以可组合的 Skill 形式接入，并能在合适的情况下使用对用户的共同理解。
 
-## 核心流程
+## 核心理念
 
 ```text
-用户请求
-    -> OpenAI Agents SDK Runner
-    -> Personal Planner Agent
-    -> 日历 / 待办 / 偏好 / 天气工具
-    -> 结构化计划
-    -> Python 冲突校验
-    -> 用户审阅和编辑
-    -> 编辑事件存储
-    -> 偏好更新
-    -> 更好的后续计划
+用户需求 → 生成计划 → 用户反馈与修改 → Shared Memory
+    ↑                                      ↓
+    └──── Preference Learning ←────────────┘
 ```
 
-OpenAI Agents SDK 负责 Agent 循环、模型调用、函数工具调用和结构化输出。Python 代码负责时间冲突、时长、校验及数据库写入等硬性约束。
+系统从接受、移动、删除、跳过和编辑计划项等结构化证据中学习。单次修改不会被直接当成永久规则；系统会根据重复模式、上下文、时效性和置信度逐步聚合偏好。
 
-## 规划架构
+## 系统架构
 
-```text
-Streamlit 前端
-        |
-        v
-FastAPI 后端
-        |
-        v
-OpenAI Agents SDK Runner
-        |
-        v
-Personal Planner Agent
-   |         |         |
-   v         v         v
-日历工具    记忆工具    调度校验器
-   |         |         |
-   v         v         v
-Google      SQLite     Python 规则
-Calendar    数据库
+```mermaid
+flowchart TB
+    U[用户] --> A[Personal Life Agent]
+    A --> P[意图路由与 Planner]
+    P --> D[Daily Planning Skill]
+    P --> T[Travel Skill]
+    P --> G[Goal Skill]
+    P --> H[Health Skill]
+    D & T & G & H --> TL[Tool Layer]
+    TL --> X[Calendar / Todo / Weather / Maps / Web Search]
+    P --> V[确定性 Validator]
+    V --> DP[个性化计划]
+    DP --> F[用户反馈]
+    F --> E[Edit Event]
+    E --> M[Shared Memory]
+    M --> L[Preference Learning]
+    L --> P
 ```
 
-日历写入属于有副作用的操作。系统必须先生成草稿，只有在用户明确确认后才能写入真实日历。
+Planner 负责编排；Skill 解决明确的领域问题；Tool Layer 提供受控的外部数据和操作；Validator 执行硬约束；Shared Memory 则让上下文能够在不同 Skill 之间延续。
 
-## 技术栈
+## 功能
 
-- Python 3.11+
-- OpenAI Agents SDK：Agent 编排、工具调用和结构化输出
-- Kimi K3：通过 Moonshot OpenAI 兼容 Chat Completions API 调用
-- Open-Meteo：地点解析和每日天气预报
-- OpenAI Python SDK：底层兼容 API 客户端
-- HTTPX：可注入的离线 transport 与在线天气请求
-- Pydantic：结构化输入和输出
-- pytest：测试
+### 当前 MVP
 
-FastAPI、Streamlit 和 SQLite 是后续阶段的计划。
+- 基于自然语言的日常规划
+- Calendar、Todo、Weather 和 Preference 的工具抽象
+- 结构化计划输出
+- 确定性的时间冲突与规则校验
+- Profile 与 Behavioral Memory 数据模型
+- 面向用户修改的 Edit Event 记录
+- Planner、Validator 与 Memory 的基础测试
 
-## 项目结构
+### 计划中的 Skills
+
+- **Travel：** 结合地图、天气、检索和偏好生成个性化行程
+- **Goal：** 将长期目标拆解为可执行行动，并支持目标驱动规划
+- **Health：** 在用户设定的边界内支持习惯与健康目标
+- **更多 Skill：** Study、Finance、Shopping 等生活管理领域
+
+## Memory System
+
+| Memory 类型 | 用途 | 示例 |
+| --- | --- | --- |
+| Profile Memory | 用户明确给出的长期设置和事实 | 时区、工作时间、饮食限制 |
+| Episodic Memory | 重要历史事件、计划和结果 | 最近一次旅行或错过的截止日期 |
+| Behavioral Preference Memory | 从重复行为中聚合的证据 | 经常将健身改到 20:00 后 |
+| Planning Context | 当前请求的短期上下文 | 今天已有日程和当前优先级 |
+
+推断出的偏好应保存来源、置信度和更新时间；最终用户应能够查看、修正或删除这些偏好。
+
+## Skills
+
+Skill 是同一个 Agent 的能力扩展，而不是拥有彼此割裂 Memory 的独立产品。比如“偏好慢旅行”或“晚上运动”的信息，可以在合适的 Skill 中复用。
+
+| Skill | 职责 | 状态 |
+| --- | --- | --- |
+| Daily Planning | 根据任务和约束生成可执行日计划 | MVP 重点 |
+| Travel | 生成个性化旅行计划 | 计划中 |
+| Goal | 连接长期目标与日常行动 | 计划中 |
+| Health | 支持习惯与健康目标 | 计划中 |
+
+## Tool Layer
+
+| 类别 | 示例 | 职责 |
+| --- | --- | --- |
+| 个人组织 | Calendar、Todo | 读取已有安排；写入前必须确认 |
+| 外部上下文 | Weather、Maps、Web Search | 为规划提供最新上下文 |
+| 个性化 | Preference 与 Memory 检索 | 读取相关用户信息 |
+| 安全 | Validator | 检查冲突与硬规则 |
+
+Tool 以可替换接口设计。早期可使用 Mock Provider；接入真实服务时应最小化权限，并清晰展示所有会产生副作用的操作。
+
+## Preference Learning
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant P as Planner
+    participant E as Edit Event Store
+    participant M as Shared Memory
+    participant L as Preference Learner
+    U->>P: 请求生成计划
+    P->>U: 返回计划草稿
+    U->>P: 接受、移动、删除或跳过
+    P->>E: 保存结构化 Edit Event
+    E->>M: 保存行为证据
+    M->>L: 读取相关证据
+    L->>M: 更新偏好置信度
+    M->>P: 为下次规划提供上下文
+```
+
+Planner 将学习到的偏好视为软信号。用户当前意图、已存在的日历安排和确定性硬约束始终优先。
+
+## Roadmap
+
+| 阶段 | 目标 | 状态 |
+| --- | --- | --- |
+| 1 | Daily Planner MVP：Planner、Tools、Validator、Memory Models、Tests | 进行中 |
+| 2 | Edit Event → Memory Update → Preference Learning → 个性化规划 | 当前最高优先级 |
+| 3 | 真实 Calendar、Todo、持久化存储与 Search 集成 | 计划中 |
+| 4 | Goal Skill | 计划中 |
+| 5 | Travel Skill | 计划中 |
+| 6 | Reflection 与 Trajectory Learning | 计划中 |
+| 7 | 面向复杂任务的内部 Multi-Agent 专业化协作 | 后续 |
+
+Multi-Agent 是未来可选的内部实现升级；对用户而言，产品始终是一个 Personal Life Agent。
+
+## 项目目录
 
 ```text
 Genshin-Agent/
-|-- planner_agents/
-|   `-- planner_agent.py
-|-- config/
-|   `-- settings.py
-|-- tools/
-|   |-- calendar_tool.py
-|   |-- todo_tool.py
-|   |-- weather_tool.py
-|   |-- preference_tool.py
-|   `-- validator_tool.py
-|-- tests/
-|-- main.py
-|-- requirements.txt
-|-- README.md
-`-- README.zh-CN.md
+├── app/                    # 应用入口与界面
+├── planner/                # 路由、规划与编排
+├── skills/
+│   ├── daily/
+│   ├── travel/             # 计划中
+│   ├── goal/               # 计划中
+│   └── health/             # 计划中
+├── memory/                 # 档案、事件与行为记忆
+├── preference_learning/    # Edit Event 与偏好推断
+├── tools/                  # 外部服务适配器
+├── validator/              # 确定性校验
+├── database/               # 存储与迁移
+├── tests/
+├── docs/
+├── README.md
+└── README.zh-CN.md
 ```
 
-## 本地安装（Windows PowerShell）
+## 快速开始
 
-### 1. 获取项目
+> 具体命令会随实现最终确定。以下为计划中的 Python 本地开发流程。
 
-```powershell
-git clone <repository-url>
+```bash
+git clone https://github.com/<your-org>/Genshin-Agent.git
 cd Genshin-Agent
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2. 创建虚拟环境
+将仓库提供的环境变量示例复制为本地 `.env`，填写自己的凭据后，运行文档说明的应用或演示入口。不要提交 API Key、日历导出或用户 Memory 数据。
 
-```powershell
-py -3.11 -m venv .venv
-```
+## 开发指南
 
-### 3. 激活环境
+- 将领域行为放在 Skill 中，将跨 Skill 协调放在 Planner 中。
+- 在耦合具体厂商 API 前先定义 Tool 接口。
+- 将用户反馈建模为结构化 Edit Event，而不是只保存自由文本日志。
+- 每条学习到的偏好都保存来源、置信度和时效性。
+- 用确定性逻辑校验时间冲突和硬约束。
+- 修改规划、Memory、校验或学习逻辑时同步添加测试。
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-### 4. 安装依赖
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-核心依赖包括：
+建议维护以下文档：
 
 ```text
-httpx
-openai
-openai-agents
-pydantic
-python-dotenv
-pytest
+docs/
+├── architecture.md
+├── roadmap.md
+├── memory.md
+├── preference-learning.md
+├── skills.md
+├── tools.md
+├── development.md
+├── api.md
+└── demo.md
 ```
 
-### 5. 配置环境变量
+## 后续工作
 
-复制 `.env.example` 为 `.env`，并填入自己的 API Key：
+- 让用户查看、修改、删除或关闭已学习的 Memory
+- 建立计划质量、约束满足度与个性化程度的评估体系
+- 制定长期数据的保留与隐私策略
+- 安全同步日历和任务服务，并加入明确确认流程
+- 完成交互式 Demo，展示“反馈 → 学习 → 下次更懂用户”的闭环
+- 在复杂 Skill 内部接入检索、预订和优化等工作单元
 
-```powershell
-Copy-Item .env.example .env
-```
+## 贡献
 
-```env
-MOONSHOT_API_KEY=replace_with_your_moonshot_api_key
-KIMI_MODEL=kimi-k3
-KIMI_BASE_URL=https://api.moonshot.ai/v1
-KIMI_REASONING_EFFORT=max
-WEATHER_PROVIDER=open-meteo
-WEATHER_TIMEOUT_SECONDS=20
-```
+欢迎贡献。请先在 Issue 或 Discussion 中说明用户问题、预期行为，以及涉及的 Skill 或平台模块。
 
-Open-Meteo 不需要 API Key。完全离线开发时，可设置 `WEATHER_PROVIDER=mock`。请勿提交 `.env` 或 API Key。
-
-## 使用方法
-
-首先运行完全离线、确定性的 MVP 演示：
-
-```powershell
-python main.py --demo --date 2026-08-07 --location "Madison, WI"
-```
-
-配置 `MOONSHOT_API_KEY` 后，可运行真实 Kimi 规划：
-
-```powershell
-python main.py --goal "安排两小时深度学习和一次户外跑步" --date 2026-08-07 --location "Madison, WI"
-```
-
-命令会输出通过校验的 JSON `DailyPlan`。MVP 输入参数为 `--goal`、`--date` 和 `--location`；`--demo` 会在不调用外部模型的情况下，完整运行日历、待办、偏好、天气路由和冲突校验流程。
-
-运行测试：
-
-```powershell
-python -m pytest -q
-```
-
-## 数据契约
-
-规划模块定义了 `PlanItem`、`PlanValidation` 和 `DailyPlan` Pydantic 模型。应用未来还会包含：
-
-- `Task`
-- `CalendarEvent`
-- `EditEvent`
-- `UserPreference`
-
-所有层应共享这些契约：工具返回结构化日历和偏好数据；Agent 返回结构化计划；校验器校验同一计划；前端渲染同一计划；数据库保存计划及后续编辑。
-
-## 工具提供者
-
-当前规划器使用：
-
-- `get_calendar_events(date)`
-- `get_todos()`
-- `get_user_preferences()`
-- `get_weather(location, date)`
-- `validate_schedule(schedule)`
-
-日历、待办和偏好数据为模拟数据。天气默认使用 Open-Meteo，并提供可重复的模拟实现用于离线测试。提供者接口允许日后替换为真实 API，而无需修改规划器接口。
-
-## 记忆设计
-
-系统区分三类记忆：
-
-1. 对话记忆：多轮对话所需的近期消息。
-2. 档案记忆：作息、偏好开始时间、每日最大活动数等相对稳定的偏好。
-3. 轨迹记忆：移动、删除、接受或跳过计划项等原始证据。
-
-长期偏好不应因为一次编辑就被覆盖。偏好更新器应保存证据数量、置信度和最近更新时间，并在证据充分时更新偏好。
-
-## 第一阶段验收标准
-
-- [x] 可从命令行提交自然语言请求。
-- [x] Agent 读取模拟日历、待办和偏好上下文。
-- [x] Agent 返回经过校验的 `DailyPlan` 对象。
-- [x] 校验器可发现重叠事件。
-- [x] 有效计划不与现有事件重叠。
-- [x] 终端输出格式化计划 JSON。
-- [x] 测试覆盖有效计划、冲突计划和全部模拟工具。
-
-## 路线图
-
-### 阶段 1：日规划垂直切片
-
-- 定义数据模型。
-- 实现模拟工具。
-- 创建一个规划 Agent。
-- 增加确定性冲突校验。
-- 显示计划草稿。
-
-### 阶段 2：编辑与记忆
-
-- 使用 SQLite 保存计划。
-- 记录移动、删除、接受和跳过事件。
-- 实现初始偏好更新规则。
-- 在后续计划中使用更新后的偏好。
-
-### 阶段 3：真实日历集成
-
-- 配置 Google Calendar OAuth。
-- 读取真实日历事件。
-- 日历写入前要求明确确认。
-- 同步已确认计划。
-
-### 阶段 4：旅行规划
-
-- 搜索候选地点和活动。
-- 复用日规划偏好。
-- 校验开放时间、通勤时间、节奏与休息。
-- 在同一记忆系统中记录旅行计划的编辑。
-
-## 团队协作
-
-建议使用短生命周期的功能分支和 Pull Request：
-
-```text
-main
-|-- feature/agent
-|-- feature/scheduler
-`-- feature/frontend
-```
-
-1. 从最新 `main` 创建分支。
-2. 实现一个小且可测试的改动。
-3. 使用清晰的提交信息提交。
-4. 推送分支并创建 Pull Request。
-5. 至少请求一位成员审阅。
-6. 所有测试通过后再合并。
-
-不要提交 API Key、OAuth Token、`.env`、`.venv` 或本地数据库文件。
-
-## 项目成功定义
-
-项目应展示的不只是计划生成：
-
-> 用户编辑日计划后，系统会存储该编辑的证据；之后的日计划或旅行计划会因为学到的偏好，产生可观察且可解释的变化。
-
-## 贡献者
-
-- 成员 1：Agent 与工具
-- 成员 2：调度、记忆与评估
+提交 Pull Request 时请保持改动聚焦、补充测试、不提交凭据或真实用户数据，并说明对数据模型、权限或校验规则的修改。
 
 ## 许可证
 
-如果项目需要公开，请补充许可证。私有课程项目请遵循课程或学校要求。
+项目计划采用 [MIT License](LICENSE)。公开发布前请加入 `LICENSE` 文件；在此之前，所有权利由项目维护者保留。

@@ -1,330 +1,220 @@
-# Personal Planner Agent
+# Personal Life Agent
+
+> **Project codename: Genshin-Agent**
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-A personal planning agent that learns from how users organize their daily lives and travel.
+An evolving personal AI companion that learns how a user lives and turns that understanding into better plans over time.
 
-The project combines daily scheduling and travel planning through one shared user-preference model. Instead of only remembering what a user says, the system records how the user edits, accepts, deletes, moves, and skips planned activities, then uses that evidence to improve future plans.
+> **Memory → Preference Learning → Personalized Planning**
 
 ## Project Status
 
-This repository now contains the backend core for the first MVP: an OpenAI
-Agents SDK planner, a Kimi K3 model configured through Moonshot's
-OpenAI-compatible API, mock calendar/preference tools, live Open-Meteo weather,
-a scheduler, deterministic conflict validation, and offline tests. Real
-calendar integration, a frontend, and long-term preference learning remain
-planned.
+The project is currently focused on the Daily Planner MVP: a planner, a controlled tool layer, deterministic schedule validation, memory models, and foundational tests. The immediate goal is to complete the learning loop so that user edits influence later plans.
 
-## MVP Goal
+Travel, goal, health, and other capabilities are planned as **Skills**. They are not separate user-facing agents.
 
-The first working demo should support this flow:
+## Vision
 
-1. A user describes tasks for a day in natural language.
-2. The agent reads existing events from a mock calendar tool.
-3. The agent reads mock user preferences.
-4. The agent reads live weather when a goal involves travel or outdoor activity.
-5. The agent generates a structured daily-plan draft.
-6. Deterministic Python validation checks for time conflicts.
-7. The frontend displays the draft for user review.
-8. Later iterations record edits and update long-term preferences.
+Most assistants start from zero on every request. A genuine personal assistant should build continuity: it remembers relevant context, notices how a user changes plans, and becomes more useful through repeated interaction.
 
-The first milestone does **not** include automatic booking, payment,
-multi-agent handoffs, vector databases, or direct writes to a real calendar.
+Personal Life Agent gives the user one consistent assistant. Daily planning, travel, goals, health, and future domains are modular Skills that can safely use a shared understanding of the user.
 
-## Core Idea
+## Core Concept
 
 ```text
-User request
-    -> OpenAI Agents SDK Runner
-    -> Personal Planner Agent
-    -> Calendar / Memory / Weather tools
-    -> Structured plan
-    -> Python validation
-    -> User review and edits
-    -> Edit-event storage
-    -> Preference update
-    -> Better future plans
+User request → Plan → User feedback and edits → Shared Memory
+      ↑                                             ↓
+      └────── Preference Learning ←─────────────────┘
 ```
 
-The OpenAI Agents SDK is responsible for the agent loop, model invocation,
-function-tool calls, and structured output. Regular Python code is responsible
-for hard constraints such as time conflicts, durations, validation, and database
-writes.
+The system learns from structured evidence such as accepting, moving, deleting, skipping, or editing planned items. It does not treat a single edit as a permanent rule; it aggregates repeated patterns with context, recency, and confidence.
 
-## Proposed Architecture
+## Architecture
 
-```text
-Streamlit frontend
-        |
-        v
-FastAPI backend
-        |
-        v
-OpenAI Agents SDK Runner
-        |
-        v
-Personal Planner Agent
-   |         |         |
-   v         v         v
-Calendar   Memory   Scheduling
- tools      tools     validator
-   |         |         |
-   v         v         v
-Google     SQLite    Python rules
-Calendar   database
+```mermaid
+flowchart TB
+    U[User] --> A[Personal Life Agent]
+    A --> P[Intent Router and Planner]
+    P --> D[Daily Planning Skill]
+    P --> T[Travel Skill]
+    P --> G[Goal Skill]
+    P --> H[Health Skill]
+    D & T & G & H --> TL[Tool Layer]
+    TL --> X[Calendar / Todo / Weather / Maps / Web Search]
+    P --> V[Deterministic Validator]
+    V --> DP[Personalized Plan]
+    DP --> F[User feedback]
+    F --> E[Edit Events]
+    E --> M[Shared Memory]
+    M --> L[Preference Learning]
+    L --> P
 ```
 
-Calendar writes must be treated as side effects. The system should generate a draft first and write to a real calendar only after explicit user confirmation.
+The planner orchestrates work; Skills solve a focused domain problem; tools provide controlled access to external data and actions; the validator enforces hard constraints; and shared memory preserves useful context across Skills.
 
-## Technology Stack
+## Features
 
-- Python 3.11+
-- OpenAI Agents SDK for agent orchestration, tool calling, and structured output
-- Kimi K3 through Moonshot's OpenAI-compatible Chat Completions API
-- Open-Meteo for live geocoding and daily weather forecasts
-- OpenAI Python SDK as the underlying compatible API client
-- HTTPX for injectable offline transports and live weather requests
-- Pydantic for structured inputs and outputs
-- pytest for tests
-- Git and GitHub for collaboration
+### Current MVP
 
-FastAPI, Streamlit, and SQLite remain planned for later phases.
+- Natural-language daily planning
+- Calendar, todo, weather, and preference tool abstractions
+- Structured plan output
+- Deterministic conflict and rule validation
+- Profile and behavioral memory models
+- Edit-event-oriented feedback capture
+- Foundational planner, validator, and memory tests
 
-## Current Project Structure
+### Planned Skills
 
-```text
-Genshin-Agent/
-|-- planner_agents/
-|   `-- planner_agent.py
-|-- config/
-|   `-- settings.py
-|-- tools/
-|   |-- calendar_tool.py
-|   |-- weather_tool.py
-|   |-- preference_tool.py
-|   `-- validator_tool.py
-|-- tests/
-|   |-- test_planner_agent.py
-|   |-- test_calendar_tool.py
-|   |-- test_weather_tool.py
-|   `-- test_daily_pipeline.py
-|-- main.py
-|-- .env.example
-|-- .gitignore
-|-- requirements.txt
-`-- README.md
+- **Travel:** personalized itineraries informed by maps, weather, research, and preferences
+- **Goal:** long-term goal decomposition and goal-driven planning
+- **Health:** routine and wellbeing planning within user-defined boundaries
+- **More Skills:** study, finance, shopping, and other life-management domains
+
+## Memory System
+
+| Memory type | Purpose | Example |
+| --- | --- | --- |
+| Profile Memory | Explicit, durable settings and facts | Time zone, working hours, dietary restrictions |
+| Episodic Memory | Important past events and outcomes | A recent trip or missed deadline |
+| Behavioral Preference Memory | Aggregated evidence from repeated actions | Often moves gym sessions after 20:00 |
+| Planning Context | Short-lived context for the active request | Today's events and stated priorities |
+
+Inferred preferences should retain their source, confidence, and last-updated time. Users should ultimately be able to review, correct, or remove them.
+
+## Skills
+
+Skills are extensions of one agent, not isolated products with fragmented memories. A relevant preference—such as a slow travel pace or an evening exercise routine—can be reused by the appropriate Skill.
+
+| Skill | Responsibility | Status |
+| --- | --- | --- |
+| Daily Planning | Build realistic day plans from tasks and constraints | MVP focus |
+| Travel | Create personalized trip plans | Planned |
+| Goal | Connect long-term goals to actions | Planned |
+| Health | Support routines and health goals | Planned |
+
+## Tool Layer
+
+| Category | Examples | Responsibility |
+| --- | --- | --- |
+| Personal organization | Calendar, todo list | Read commitments; write only with confirmation |
+| Context | Weather, maps, web search | Supply current planning context |
+| Personalization | Preference and memory retrieval | Retrieve relevant user context |
+| Safety | Validator | Check conflicts and hard rules |
+
+Tools are designed as replaceable interfaces. Early versions can use mock providers; production integrations should request minimal permissions and clearly expose all side effects.
+
+## Preference Learning
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant P as Planner
+    participant E as Edit Event Store
+    participant M as Shared Memory
+    participant L as Preference Learner
+    U->>P: Request a plan
+    P->>U: Return a draft
+    U->>P: Accept, move, delete, or skip
+    P->>E: Save structured edit event
+    E->>M: Store evidence
+    M->>L: Retrieve relevant evidence
+    L->>M: Update preference confidence
+    M->>P: Provide context for the next plan
 ```
 
-## Local Setup (Windows PowerShell)
-
-### 1. Clone the repository
-
-```powershell
-git clone <repository-url>
-cd AIAgentProject
-```
-
-If the repository already exists locally, open the folder directly in VS Code.
-
-### 2. Create a virtual environment
-
-```powershell
-py -3.11 -m venv .venv
-```
-
-### 3. Activate the environment
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-### 4. Install dependencies
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-The core dependency set includes:
-
-```text
-httpx
-openai
-openai-agents
-pydantic
-python-dotenv
-pytest
-```
-
-### 5. Configure environment variables
-
-Copy `.env.example` to `.env` and add your own API key:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-```env
-MOONSHOT_API_KEY=replace_with_your_moonshot_api_key
-KIMI_MODEL=kimi-k3
-KIMI_BASE_URL=https://api.moonshot.ai/v1
-KIMI_REASONING_EFFORT=max
-WEATHER_PROVIDER=open-meteo
-WEATHER_TIMEOUT_SECONDS=20
-```
-
-Open-Meteo does not require an API key for this MVP. Set
-`WEATHER_PROVIDER=mock` when working completely offline.
-
-Never commit `.env` or API keys to GitHub. Each developer should use their own local credentials.
-
-## Development Commands
-
-Run the deterministic, fully offline MVP demo (recommended first run):
-
-```powershell
-python main.py --demo --date 2026-08-07 --location "Madison, WI"
-```
-
-Run a real Kimi-backed plan after configuring `MOONSHOT_API_KEY`:
-
-```powershell
-python main.py --goal "安排两小时深度学习和一次户外跑步" --date 2026-08-07 --location "Madison, WI"
-```
-
-The command returns a validated JSON `DailyPlan`. `--goal`, `--date`, and
-`--location` are the MVP input surface; `--demo` exercises the complete
-calendar, todo, preference, weather-routing, and conflict-validation pipeline
-without any external model call.
-
-Run tests:
-
-```powershell
-python -m pytest -q
-```
-
-## Initial Data Contracts
-
-The planner currently defines structured Pydantic models for `PlanItem`,
-`PlanValidation`, and `DailyPlan`. The following broader contracts remain part
-of the planned application architecture:
-
-- `Task`
-- `CalendarEvent`
-- `EditEvent`
-- `UserPreference`
-
-Every layer should share these contracts:
-
-- Tools return structured calendar and preference data.
-- The agent returns a structured plan.
-- The validator checks the same plan structure.
-- The frontend renders the same plan structure.
-- The database stores the plan and subsequent edits.
-
-## Tool Providers
-
-The planner currently uses:
-
-- `get_calendar_events(date)`
-- `get_user_preferences(user_id)`
-- `schedule_tasks(tasks, events, preferences)`
-- `get_weather(location, date)`
-
-Calendar and preference data are mocked. Weather uses Open-Meteo by default and
-retains a deterministic mock provider for offline tests. The provider interfaces
-allow future APIs to replace the current implementations without changing the
-planner-facing contracts.
-
-## Memory Design
-
-The project separates memory into three categories:
-
-1. **Conversation memory**: recent messages needed for a multi-turn interaction.
-2. **Profile memory**: structured, relatively stable preferences such as preferred start time or maximum activities per day.
-3. **Trajectory memory**: raw evidence such as moving, deleting, accepting, or skipping a plan item.
-
-Long-term preferences should not be overwritten after one edit. The preference updater should store evidence count, confidence, and last-updated time, then update a preference only after sufficient evidence.
-
-## First Milestone Acceptance Criteria
-
-The first milestone is complete when:
-
-- [x] A natural-language request can be submitted from the CLI.
-- [x] The agent reads mock calendar, todo, and preference context.
-- [x] The agent returns a validated `DailyPlan` object.
-- [x] The validator detects overlapping events.
-- [x] A valid plan contains no overlaps with existing events.
-- [x] The plan is displayed as formatted JSON in the terminal.
-- [x] Tests cover valid plans, conflicting plans, and each mock tool.
+The planner treats learned preferences as soft signals. Current user intent, calendar commitments, and deterministic constraints always take precedence.
 
 ## Roadmap
 
-### Phase 1: Daily-planning vertical slice
+| Phase | Goal | Status |
+| --- | --- | --- |
+| 1 | Daily Planner MVP: planner, tools, validator, memory models, tests | In progress |
+| 2 | Edit Events → memory update → preference learning → personalized planning | Current priority |
+| 3 | Real calendar, todo, persistent storage, and search integrations | Planned |
+| 4 | Goal Skill | Planned |
+| 5 | Travel Skill | Planned |
+| 6 | Reflection and trajectory learning | Planned |
+| 7 | Internal multi-agent specialization for complex work | Future |
 
-- Define data models.
-- Implement mock tools.
-- Create one planner agent.
-- Add deterministic conflict validation.
-- Display a plan draft.
+Multi-agent orchestration is a future implementation option. The product experience remains one Personal Life Agent.
 
-### Phase 2: Editing and memory
-
-- Save plans in SQLite.
-- Record move, delete, accept, and skip events.
-- Implement initial preference-update rules.
-- Use updated preferences in later plans.
-
-### Phase 3: Real calendar integration
-
-- Configure Google Calendar OAuth.
-- Read real calendar events.
-- Require confirmation before calendar writes.
-- Synchronize confirmed plans.
-
-### Phase 4: Travel planning
-
-- Search candidate places and activities.
-- Reuse daily-planning preferences.
-- Validate opening hours, travel time, pace, and breaks.
-- Record travel-plan edits in the same memory system.
-
-## Team Workflow
-
-Use short-lived feature branches and pull requests:
+## Project Structure
 
 ```text
-main
-|-- feature/agent
-|-- feature/scheduler
-`-- feature/frontend
+Genshin-Agent/
+├── app/                    # Application entry points and interfaces
+├── planner/                # Routing, planning, and orchestration
+├── skills/
+│   ├── daily/
+│   ├── travel/             # Planned
+│   ├── goal/               # Planned
+│   └── health/             # Planned
+├── memory/                 # Profile, episodic, and behavioral memory
+├── preference_learning/    # Edit events and preference inference
+├── tools/                  # External-service adapters
+├── validator/              # Deterministic validation
+├── database/               # Persistence and migrations
+├── tests/
+├── docs/
+├── README.md
+└── README.zh-CN.md
 ```
 
-Recommended workflow:
+## Quick Start
 
-1. Create a branch from the latest `main`.
-2. Implement one small, testable change.
-3. Commit with a clear message.
-4. Push the branch and open a pull request.
-5. Ask at least one teammate to review it.
-6. Merge only after tests pass.
+> Commands will be finalized with the implementation. This is the intended Python setup flow.
 
-Do not commit API keys, OAuth tokens, `.env`, `.venv`, or local database files.
+```bash
+git clone https://github.com/<your-org>/Genshin-Agent.git
+cd Genshin-Agent
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-## Definition of Project Success
+Copy the provided environment example to a local `.env`, add only your own credentials, and run the documented application or demo entry point. Never commit API keys, calendar exports, or user memory data.
 
-The project should demonstrate more than plan generation:
+## Development
 
-> A user edits a daily plan, the system stores evidence from that edit, and a later daily or travel plan changes in an observable and explainable way because of the learned preference.
+- Keep domain behavior inside Skills and cross-Skill coordination inside the planner.
+- Define tool interfaces before coupling a Skill to a vendor API.
+- Model feedback as structured edit events rather than free-form logs alone.
+- Store source, confidence, and recency with every learned preference.
+- Validate time conflicts and hard constraints deterministically.
+- Add tests when changing planning, memory, validation, or learning logic.
 
-## Contributors
+Suggested documentation:
 
-Add team members and responsibilities here:
+```text
+docs/
+├── architecture.md
+├── roadmap.md
+├── memory.md
+├── preference-learning.md
+├── skills.md
+├── tools.md
+├── development.md
+├── api.md
+└── demo.md
+```
 
-- Team member 1 — Agent and tools
-- Team member 2 — Scheduling, memory, and evaluation
-- Team member 3 — Frontend and integrations
+## Future Work
+
+- User controls to view, edit, delete, or disable learned memory
+- Plan-quality, constraint-satisfaction, and personalization evaluations
+- Clear retention and privacy policies for long-term data
+- Confirmed synchronization with calendars and task services
+- An interactive demo of the feedback-to-learning loop
+- Research, booking, and optimization workers behind complex Skills
+
+## Contributing
+
+Contributions are welcome. Please open an issue or discussion with the user problem, expected behavior, and affected Skill or platform component.
+
+For pull requests, keep changes focused, include tests, do not add credentials or real user data, and document changes to data models, permissions, or validation rules.
 
 ## License
 
-Add a license if the repository will be made public. For a private course repository, follow the course or institution requirements.
+This project is intended to use the [MIT License](LICENSE). Add the `LICENSE` file before publishing; until then, all rights are reserved by the maintainers.
