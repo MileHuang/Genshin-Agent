@@ -8,14 +8,14 @@ The project combines daily scheduling and travel planning through one shared use
 
 This repository now contains the backend core for the first MVP: an OpenAI
 Agents SDK planner, a Kimi K3 model configured through Moonshot's
-OpenAI-compatible API, mock calendar/preference tools, live Open-Meteo weather,
-a scheduler, deterministic conflict validation, and offline tests. Real
-calendar integration, a frontend, and long-term preference learning remain
-planned.
+OpenAI-compatible API, mock calendar/todo/preference tools, live Open-Meteo
+weather, deterministic conflict validation, and offline tests. Real calendar
+integration and a frontend remain planned.
 
-The repository also contains database-free Phase 1 memory contracts for edit
-evidence and learned-preference snapshots. Preference inference, persistence,
-and planner integration are still planned.
+The repository also contains Phase 1 memory contracts plus a local JSONL
+feedback flow. Repeated accept, move, skip, and delete evidence can be
+aggregated into learned preferences and supplied to later planner prompts.
+Database-backed persistence and production learning rules remain planned.
 
 ## MVP Goal
 
@@ -23,12 +23,12 @@ The first working demo should support this flow:
 
 1. A user describes tasks for a day in natural language.
 2. The agent reads existing events from a mock calendar tool.
-3. The agent reads mock user preferences.
+3. The agent reads mock todo items and user preferences.
 4. The agent reads live weather when a goal involves travel or outdoor activity.
 5. The agent generates a structured daily-plan draft.
 6. Deterministic Python validation checks for time conflicts.
-7. The frontend displays the draft for user review.
-8. Later iterations record edits and update long-term preferences.
+7. The CLI displays the draft and can record optional user feedback.
+8. Repeated feedback is aggregated into preferences for later plans.
 
 The first milestone does **not** include automatic booking, payment,
 multi-agent handoffs, vector databases, or direct writes to a real calendar.
@@ -39,7 +39,7 @@ multi-agent handoffs, vector databases, or direct writes to a real calendar.
 User request
     -> OpenAI Agents SDK Runner
     -> Personal Planner Agent
-    -> Calendar / Memory / Weather tools
+    -> Calendar / Todo / Memory / Weather tools
     -> Structured plan
     -> Python validation
     -> User review and edits
@@ -105,14 +105,22 @@ Genshin-Agent/
 |   `-- models.py
 |-- tools/
 |   |-- calendar_tool.py
+|   |-- todo_tool.py
 |   |-- weather_tool.py
 |   |-- preference_tool.py
+|   |-- edit_event.py
+|   |-- feedback_service.py
+|   |-- preference_aggregator.py
+|   |-- behavior_preference.py
 |   `-- validator_tool.py
 |-- tests/
 |   |-- test_planner_agent.py
 |   |-- test_calendar_tool.py
 |   |-- test_weather_tool.py
 |   |-- test_memory_models.py
+|   |-- test_todo_tool.py
+|   |-- test_feedback_service.py
+|   |-- test_preference_aggregator.py
 |   `-- test_daily_pipeline.py
 |-- docs/
 |   |-- memory-design.md
@@ -221,7 +229,7 @@ architecture:
 
 Every layer should share these contracts:
 
-- Tools return structured calendar and preference data.
+- Tools return structured calendar, todo, weather, and preference data.
 - The agent returns a structured plan.
 - The validator checks the same plan structure.
 - The frontend renders the same plan structure.
@@ -232,14 +240,15 @@ Every layer should share these contracts:
 The planner currently uses:
 
 - `get_calendar_events(date)`
-- `get_user_preferences(user_id)`
-- `schedule_tasks(tasks, events, preferences)`
+- `get_todos()`
+- `get_user_preferences()`
 - `get_weather(location, date)`
 
-Calendar and preference data are mocked. Weather uses Open-Meteo by default and
-retains a deterministic mock provider for offline tests. The provider interfaces
-allow future APIs to replace the current implementations without changing the
-planner-facing contracts.
+Calendar and todo data are mocked. Preferences combine a fixed profile with
+locally aggregated feedback evidence. Weather uses Open-Meteo by default and
+retains a deterministic mock provider for offline tests. Provider interfaces
+allow future APIs to replace these implementations without changing planner
+contracts.
 
 ## Memory Design
 
@@ -249,20 +258,22 @@ The project separates memory into three categories:
 2. **Profile memory**: structured, relatively stable preferences such as preferred start time or maximum activities per day.
 3. **Trajectory memory**: raw evidence such as moving, deleting, accepting, or skipping a plan item.
 
-Long-term preferences should not be overwritten after one edit. The preference updater should store evidence count, confidence, and last-updated time, then update a preference only after sufficient evidence.
+Long-term preferences are not inferred from one edit. The current aggregator
+requires repeated evidence and stores an evidence count, confidence, and update
+time. The JSONL store is intended for local demonstration, not production data.
 
 ## First Milestone Acceptance Criteria
 
 The first milestone is complete when:
 
-- [ ] A fixed natural-language request can be submitted.
-- [ ] The agent calls a mock calendar tool.
-- [ ] The agent calls a mock preference tool.
-- [ ] The agent returns a validated `DailyPlan` object.
-- [ ] The validator detects overlapping events.
-- [ ] A valid plan contains no overlaps with existing events.
-- [ ] The plan can be displayed in a terminal or minimal Streamlit page.
-- [ ] Tests cover at least one valid plan and one conflicting plan.
+- [x] A fixed natural-language request can be submitted.
+- [x] The agent calls mock calendar, todo, and preference tools.
+- [x] The agent returns a validated `DailyPlan` object.
+- [x] The validator detects overlapping events.
+- [x] A valid plan contains no overlaps with existing events.
+- [x] The plan can be displayed in a terminal demo.
+- [x] Optional CLI feedback records accept, move, delete, and skip evidence.
+- [x] Tests cover valid plans, conflicts, feedback, and preference aggregation.
 
 ## Roadmap
 
@@ -276,10 +287,10 @@ The first milestone is complete when:
 
 ### Phase 2: Editing and memory
 
-- Save plans in SQLite.
-- Record move, delete, accept, and skip events.
-- Implement initial preference-update rules.
-- Use updated preferences in later plans.
+- Replace local JSONL evidence with production persistence.
+- Refine preference-update and confidence rules.
+- Add user controls to inspect and correct learned preferences.
+- Apply learned preferences through structured planner integration.
 
 ### Phase 3: Real calendar integration
 

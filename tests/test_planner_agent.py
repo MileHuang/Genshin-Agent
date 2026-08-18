@@ -99,7 +99,8 @@ def test_planner_routes_calendar_preferences_and_weather():
     )
 
     assert result.validation.is_valid is True
-    assert result.tools_used == ["calendar", "preferences", "weather"]
+    assert result.tools_used == ["calendar", "todo", "preferences", "weather"]
+    assert result.todo_items_considered == 3
     assert result.calendar_events_considered == 1
     assert result.weather["condition"] == "Clear"
     assert calendar_calls == ["2026-08-07"]
@@ -128,7 +129,8 @@ def test_planner_skips_weather_for_indoor_goal():
         )
     )
 
-    assert result.tools_used == ["calendar", "preferences"]
+    assert result.tools_used == ["calendar", "todo", "preferences"]
+    assert result.todo_items_considered == 3
     assert result.weather is None
 
 
@@ -226,6 +228,46 @@ def test_planner_wraps_tool_failures():
     )
 
     with pytest.raises(PlannerToolError, match="calendar tool failed"):
+        asyncio.run(
+            planner.create_daily_plan(
+                "Plan work",
+                target_date="2026-08-07",
+            )
+        )
+
+
+def test_planner_wraps_malformed_calendar_event():
+    planner = PlannerAgent(
+        FakeTextAgent(plan_json(("Work", "09:00", "10:00"))),
+        calendar_getter=lambda _: [
+            {
+                "title": "Broken event",
+                "start_time": "11:00",
+                "end_time": "10:00",
+            }
+        ],
+        preference_getter=lambda: {},
+    )
+
+    with pytest.raises(PlannerToolError, match="invalid event"):
+        asyncio.run(
+            planner.create_daily_plan(
+                "Plan work",
+                target_date="2026-08-07",
+            )
+        )
+
+
+@pytest.mark.parametrize("invalid_todos", [{"title": "not a list"}, ["not a dict"]])
+def test_planner_rejects_malformed_todo_results(invalid_todos):
+    planner = PlannerAgent(
+        FakeTextAgent(plan_json(("Work", "09:00", "10:00"))),
+        calendar_getter=lambda _: [],
+        todo_getter=lambda: invalid_todos,
+        preference_getter=lambda: {},
+    )
+
+    with pytest.raises(PlannerToolError, match="todo"):
         asyncio.run(
             planner.create_daily_plan(
                 "Plan work",
