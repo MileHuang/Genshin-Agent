@@ -139,6 +139,8 @@ PLANNER_PROMPT = """
 - Calendar events 是固定日历事件，代表不可移动的占用时间，绝不能被挪动。
 - Todo items 是用户今天想完成的待办事项，应在现实可行的情况下尽量安排进日程。
 - User preferences 用来帮助个性化安排，例如作息、运动习惯、专注时间。
+  对“学习到的偏好”：优先采用 preferred_time_range，尽量避开 avoid_time_range，
+  对 deprioritize_activity 降低主动安排的优先级；用户当次明确提出的目标优先。
 - Weather 只用于调整户外、旅行、通勤、运动等和天气有关的活动。
 
 只返回一个 JSON object，结构必须严格如下：
