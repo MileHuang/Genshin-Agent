@@ -10,7 +10,7 @@
 
 ## 项目状态
 
-项目目前聚焦于 Daily Planner MVP：Planner、受控 Tool Layer、确定性的日程校验、Memory Models 和基础测试。当前最重要的目标是完成学习闭环，让用户对计划的修改能够影响下一次规划。
+项目目前已完成 Daily Planner MVP 的核心闭环：Planner、受控 Tool Layer、Google Calendar、Todoist、确定性的日程校验、偏好学习和 Streamlit 前端。用户对计划的修改会成为下一次规划的学习证据。
 
 旅行、目标、健康及更多能力将作为 **Skill** 逐步接入，而不是独立的面向用户的 Agent。
 
@@ -63,6 +63,10 @@ Planner 负责编排；Skill 解决明确的领域问题；Tool Layer 提供受�
 - 确定性的时间冲突与规则校验
 - Profile 与 Behavioral Memory 数据模型
 - 面向用户修改的 Edit Event 记录
+- Google Calendar 读取、确认后创建日程，以及 MOVE / DELETE 同步
+- Todoist 未完成待办读取
+- 本地同步记录，避免同一计划重复写入 Google Calendar
+- Streamlit 计划生成、反馈与偏好学习面板
 - Planner、Validator 与 Memory 的基础测试
 
 ### 计划中的 Skills
@@ -130,9 +134,9 @@ Planner 将学习到的偏好视为软信号。用户当前意图、已存在的
 
 | 阶段 | 目标 | 状态 |
 | --- | --- | --- |
-| 1 | Daily Planner MVP：Planner、Tools、Validator、Memory Models、Tests | 进行中 |
-| 2 | Edit Event → Memory Update → Preference Learning → 个性化规划 | 当前最高优先级 |
-| 3 | 真实 Calendar、Todo、持久化存储与 Search 集成 | 计划中 |
+| 1 | Daily Planner MVP：Planner、Tools、Validator、Memory Models、Tests | 已完成核心流程 |
+| 2 | Edit Event → Preference Learning → 个性化规划 | 已完成本地 V1 |
+| 3 | 真实 Calendar、Todo 与持久化存储 | Google Calendar / Todoist 已接入；数据库计划中 |
 | 4 | Goal Skill | 计划中 |
 | 5 | Travel Skill | 计划中 |
 | 6 | Reflection 与 Trajectory Learning | 计划中 |
@@ -175,6 +179,10 @@ pip install -r requirements.txt
 ```
 
 将仓库提供的环境变量示例复制为本地 `.env`，填写自己的凭据后，运行文档说明的应用或演示入口。不要提交 API Key、日历导出或用户 Memory 数据。
+
+Google Calendar 为可选功能：在 Google Cloud 启用 Calendar API、创建桌面 OAuth Client，并将下载的 JSON 保存为 `secrets/google_client_secret.json`。首次使用时浏览器会请求授权。OAuth token 与同步记录保存在 `data/`，均不会提交到 Git。
+
+Todoist 为可选功能：在 `.env` 设置 `TODOIST_API_TOKEN` 后，可在前端侧栏开启“读取 Todoist 待办”。
 
 ## 开发指南
 

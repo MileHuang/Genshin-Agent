@@ -6,33 +6,35 @@ The project combines daily scheduling and travel planning through one shared use
 
 ## Project Status
 
-This repository now contains the backend core for the first MVP: an OpenAI
-Agents SDK planner, a Kimi K3 model configured through Moonshot's
-OpenAI-compatible API, mock calendar/todo/preference tools, live Open-Meteo
-weather, deterministic conflict validation, and offline tests. Real calendar
-integration remains planned. A minimal Streamlit frontend is available for
-generating and reviewing validated plans.
+This repository now contains the first working MVP: an OpenAI Agents SDK
+planner, a Kimi K3 model configured through Moonshot's OpenAI-compatible API,
+live Google Calendar and Todoist providers, live Open-Meteo weather,
+deterministic conflict validation, and offline tests. A Streamlit frontend
+generates and reviews validated plans.
 
 The repository also contains Phase 1 memory contracts plus a local JSONL
 feedback flow. Repeated accept, move, skip, and delete evidence can be
 aggregated into learned preferences and supplied to later planner prompts.
-Database-backed persistence and production learning rules remain planned.
+Feedback and Calendar sync records are stored locally for the MVP;
+database-backed persistence and production learning rules remain planned.
 
 ## MVP Goal
 
 The first working demo should support this flow:
 
 1. A user describes tasks for a day in natural language.
-2. The agent reads existing events from a mock calendar tool.
-3. The agent reads mock todo items and user preferences.
+2. The agent reads existing events from either a mock provider or Google Calendar.
+3. The agent reads mock todo items or open Todoist tasks, plus user preferences.
 4. The agent reads live weather when a goal involves travel or outdoor activity.
 5. The agent generates a structured daily-plan draft.
 6. Deterministic Python validation checks for time conflicts.
-7. The CLI or Streamlit frontend displays the draft; the CLI can record feedback.
+7. The CLI or Streamlit frontend displays the draft and records feedback.
 8. Repeated feedback is aggregated into preferences for later plans.
+9. After explicit confirmation, the frontend creates the plan in Google Calendar.
+10. Synced plan items can be moved or deleted from the frontend and Google Calendar together.
 
 The first milestone does **not** include automatic booking, payment,
-multi-agent handoffs, vector databases, or direct writes to a real calendar.
+multi-agent handoffs, vector databases, or unconfirmed calendar writes.
 
 ## Core Idea
 
@@ -77,7 +79,10 @@ Google     SQLite    Python rules
 Calendar   database
 ```
 
-Calendar writes must be treated as side effects. The system should generate a draft first and write to a real calendar only after explicit user confirmation.
+Calendar writes are treated as side effects. The system generates a draft first
+and writes to Google Calendar only after explicit user confirmation. A local
+sync record saves Google event IDs so the same plan is not created twice and
+later MOVE/DELETE actions can update the corresponding event.
 
 ## Technology Stack
 
@@ -90,6 +95,7 @@ Calendar writes must be treated as side effects. The system should generate a dr
 - Pydantic for structured inputs and outputs
 - Streamlit for the minimal visual frontend
 - pytest for tests
+- Google Calendar API client and OAuth libraries
 - Git and GitHub for collaboration
 
 FastAPI and SQLite remain planned for later phases.
@@ -107,6 +113,7 @@ Genshin-Agent/
 |   `-- models.py
 |-- tools/
 |   |-- calendar_tool.py
+|   |-- calendar_sync_store.py
 |   |-- todo_tool.py
 |   |-- weather_tool.py
 |   |-- preference_tool.py
@@ -127,6 +134,7 @@ Genshin-Agent/
 |-- docs/
 |   |-- memory-design.md
 |   `-- phase-1-task-list.md
+|   `-- development-log.md
 |-- .codex/skills/daily-planner-mvp/
 |   |-- agents/openai.yaml
 |   `-- SKILL.md
@@ -202,6 +210,17 @@ Open-Meteo does not require an API key for this MVP. Set
 
 Never commit `.env` or API keys to GitHub. Each developer should use their own local credentials.
 
+### Optional Google Calendar and Todoist setup
+
+Google Calendar is optional. Enable the Calendar API in a Google Cloud project,
+create a desktop OAuth client, and save its downloaded JSON under
+`secrets/google_client_secret.json`. The first Google Calendar use opens a
+browser for consent. Keep the generated OAuth token and sync records under
+`data/`; both are ignored by Git.
+
+For Todoist, set `TODOIST_API_TOKEN` in `.env`. The current Todoist integration
+reads open tasks for planning; it never commits the token.
+
 ## Development Commands
 
 Run the OpenAI Agents SDK planning demo:
@@ -257,7 +276,8 @@ The planner currently uses:
 - `get_user_preferences()`
 - `get_weather(location, date)`
 
-Calendar and todo data are mocked. Preferences combine a fixed profile with
+Calendar and todo providers can be mocked for offline tests or switched to
+Google Calendar and Todoist in the Streamlit sidebar. Preferences combine a fixed profile with
 locally aggregated feedback evidence. Weather uses Open-Meteo by default and
 retains a deterministic mock provider for offline tests. Provider interfaces
 allow future APIs to replace these implementations without changing planner

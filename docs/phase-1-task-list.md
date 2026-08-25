@@ -8,13 +8,14 @@ This backlog is written so each section can be copied into a GitHub issue. Keep 
 Calendar + Todo + Preferences + Weather
     -> PlannerAgent
     -> validated DailyPlan
-    -> CLI review/edit simulation
+    -> Streamlit review/edit simulation
     -> EditEvent evidence
+    -> explicit Google Calendar sync
 ```
 
 ## P0 - Complete the planner input loop
 
-### [ ] Add the mock Todo tool and planner integration
+### [x] Add the mock Todo tool and planner integration
 
 Labels: `phase-1`, `P0`, `tool`, `in-progress`
 
@@ -30,7 +31,7 @@ Acceptance criteria:
 
 Coordination: one contributor owns planner integration to avoid concurrent edits to `planner_agents/planner_agent.py`.
 
-### [ ] Add an end-to-end Phase 1 pipeline test
+### [x] Add an end-to-end Phase 1 pipeline test
 
 Labels: `phase-1`, `P0`, `test`
 
@@ -58,7 +59,7 @@ Acceptance criteria:
 - Preferences retain evidence IDs, evidence count, confidence, and update time.
 - No persistence dependency is introduced.
 
-### [ ] Add an in-process edit simulation
+### [x] Add an in-process edit simulation
 
 Labels: `phase-1`, `P1`, `demo`, `memory`
 
@@ -71,7 +72,7 @@ Acceptance criteria:
 - Moving an item records both old and new slots.
 - The simulation does not mutate a real calendar or write to a database.
 
-### [ ] Prototype preference evidence aggregation
+### [x] Prototype preference evidence aggregation
 
 Labels: `phase-1`, `P1`, `memory`
 
@@ -136,6 +137,14 @@ Acceptance criteria:
 - Displays schedule rows, validation, tool usage, weather, and raw JSON.
 - Reports configuration and model-service errors without a traceback.
 
+## Delivered after the initial task list
+
+- Google Calendar OAuth provider: reads fixed events and creates a plan only after explicit confirmation.
+- Persistent local sync records: prevent duplicate plan creation and retain Google event IDs.
+- Google Calendar feedback sync: MOVE updates the event; DELETE removes it; SKIP remains feedback-only.
+- Todoist provider: reads open tasks and selects a planning-focused subset.
+- Streamlit feedback controls and a preference-learning dashboard.
+
 ## Out of scope for this milestone
 
-Do not open implementation issues yet for Travel, Health, LangGraph, multi-agent orchestration, vector databases, PostgreSQL, Redis, or real Google Calendar writes. Track them as roadmap items only.
+Do not open implementation issues yet for Travel, Health, LangGraph, multi-agent orchestration, vector databases, PostgreSQL, or Redis. Track them as roadmap items only.

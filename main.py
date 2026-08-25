@@ -17,6 +17,8 @@ from tools.edit_event import EditEventStore
 from tools.feedback_service import FeedbackService
 from tools.preference_tool import get_user_preferences
 from tools.weather_tool import MockWeatherProvider, get_weather
+from tools.calendar_tool import GoogleCalendarProvider, get_calendar_events
+from tools.todo_tool import TodoistProvider, get_todos
 
 
 DEMO_GOAL = (
@@ -54,6 +56,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--location", help="Location for weather-aware goals.")
     parser.add_argument("--demo", action="store_true", help="Run a deterministic local demo without Moonshot.")
     parser.add_argument(
+        "--google-calendar",
+        action="store_true",
+        help="Read fixed events from Google Calendar (first use opens a browser for OAuth).",
+    )
+    parser.add_argument(
+        "--todoist",
+        action="store_true",
+        help="Read active Todoist tasks using TODOIST_API_TOKEN from .env.",
+    )
+    parser.add_argument(
         "--feedback",
         action="store_true",
         help="After generating a plan, interactively record accept, move, skip, or delete feedback.",
@@ -63,9 +75,23 @@ def parse_args() -> argparse.Namespace:
 
 async def run() -> None:
     args = parse_args()
+    calendar_getter = (
+        (lambda target_date: get_calendar_events(
+            target_date, provider=GoogleCalendarProvider()
+        ))
+        if args.google_calendar
+        else get_calendar_events
+    )
+    todo_getter = (
+        (lambda: get_todos(provider=TodoistProvider()))
+        if args.todoist
+        else get_todos
+    )
     planner = (
         PlannerAgent(
             DemoTextAgent(),
+            calendar_getter=calendar_getter,
+            todo_getter=todo_getter,
             weather_getter=lambda location, target_date: get_weather(
                 location,
                 target_date,
@@ -73,7 +99,10 @@ async def run() -> None:
             ),
         )
         if args.demo
-        else PlannerAgent()
+        else PlannerAgent(
+            calendar_getter=calendar_getter,
+            todo_getter=todo_getter,
+        )
     )
     try:
         plan = await planner.create_daily_plan(

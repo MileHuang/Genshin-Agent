@@ -349,18 +349,44 @@ class PlannerAgent:
         plan_date: str,
         location: str | None,
     ) -> DailyPlan:
-        """通过 OpenAI Agents SDK 的 Agent、Runner 和工具调用生成计划。"""
+        """先确定性获取上下文，再用 Agents SDK 生成结构化计划。"""
 
-        sdk_agent, tool_state, routing_assumptions = self._build_sdk_agent(
+        calendar_events = await self._call_tool(
+            "calendar", self.calendar_getter, plan_date
+        )
+        todos = self._validate_todos(
+            await self._call_tool("todo", self.todo_getter)
+        )
+        preferences = await self._call_tool(
+            "preferences", self.preference_getter
+        )
+        tools_used = ["calendar", "todo", "preferences"]
+
+        weather_context: dict[str, Any] | None = None
+        routing_assumptions: list[str] = []
+        if self._goal_needs_weather(clean_goal):
+            if location:
+                weather_context = await self._call_tool(
+                    "weather", self.weather_getter, location, plan_date
+                )
+                tools_used.append("weather")
+            else:
+                routing_assumptions.append(
+                    "Weather was not checked because no location was provided / 因为没有提供 location，所以没有检查天气。"
+                )
+
+        sdk_agent, _, _ = self._build_sdk_agent(
             clean_goal,
             plan_date=plan_date,
             location=location,
         )
-        initial_prompt = self._build_sdk_prompt(
+        initial_prompt = self._build_prompt(
             goal=clean_goal,
             target_date=plan_date,
-            location=location,
-            needs_weather=self._goal_needs_weather(clean_goal),
+            calendar_events=calendar_events,
+            todos=todos,
+            preferences=preferences,
+            weather=weather_context,
         )
 
         conflicts: list[str] = []
@@ -368,43 +394,17 @@ class PlannerAgent:
         for attempt in range(self.max_revision_attempts + 1):
             prompt = initial_prompt
             if attempt:
-                prompt = self._build_sdk_revision_prompt(
-                    goal=clean_goal,
-                    target_date=plan_date,
-                    previous_draft=last_draft,
-                    conflicts=conflicts,
+                prompt = (
+                    f"{initial_prompt}\n\n"
+                    "上一版计划存在以下确定性时间冲突，请只返回修正后的完整 JSON：\n"
+                    f"{json.dumps(conflicts, ensure_ascii=False)}"
                 )
 
             draft = await self._generate_draft_with_sdk(sdk_agent, prompt)
             last_draft = draft
 
-            calendar_events = tool_state["calendar_events"]
-            if calendar_events is None:
-                calendar_events = await self._call_tool(
-                    "calendar",
-                    self.calendar_getter,
-                    plan_date,
-                )
-                tool_state["calendar_events"] = calendar_events
-
-            todos = tool_state["todos"]
-            if todos is None:
-                todos = self._validate_todos(
-                    await self._call_tool("todo", self.todo_getter)
-                )
-                tool_state["todos"] = todos
-
             validation = self._validate_draft(draft, calendar_events)
             if validation.is_valid:
-                tools_used = [
-                    name
-                    for name in ("calendar", "todo", "preferences", "weather")
-                    if tool_state[f"{name}_used"]
-                ]
-                weather_context = tool_state["weather"]
-                if weather_context is None and "weather" not in tools_used:
-                    weather_context = None
-
                 return DailyPlan(
                     date=plan_date,
                     goal=clean_goal,
@@ -586,18 +586,15 @@ class PlannerAgent:
 
         instructions = (
             f"{AGENT_SYSTEM_PROMPT}\n\n{PLANNER_PROMPT}\n\n"
-            "在生成最终计划前，必须根据需要使用 calendar、todo 和 preference "
-            "工具获取上下文。calendar events 是固定不可用时间。todo items 是用户"
-            "今天希望完成的任务，应在现实可行时安排进计划。当天气工具可用，并且"
-            "目标涉及户外、旅行、通勤或天气敏感活动时，使用 weather 工具。最终"
-            "输出必须符合结构化输出 schema。"
+            "调用方会在消息中直接提供 calendar、todo、preference 和可选 weather "
+            "上下文。必须基于这些上下文生成计划，最终输出必须符合结构化输出 schema。"
         )
 
         sdk_agent = Agent(
             name="Personal Planner Agent",
             instructions=instructions,
             model=model,
-            tools=tools,
+            tools=[],
             output_type=PlanDraft,
         )
         return sdk_agent, tool_state, routing_assumptions
