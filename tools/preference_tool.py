@@ -23,6 +23,7 @@ DEFAULT_BEHAVIOR_HISTORY_PATH = (
 
 def get_user_preferences(
     *,
+    user_id: str = "default",
     event_store: EditEventStore | None = None,
     aggregator: PreferenceAggregator | None = None,
 ) -> dict:
@@ -40,8 +41,14 @@ def get_user_preferences(
 
     store = event_store or EditEventStore(DEFAULT_BEHAVIOR_HISTORY_PATH)
     preference_aggregator = aggregator or PreferenceAggregator()
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ValueError("user_id 不能为空")
+    clean_user_id = user_id.strip()
     learned_preferences = [
-        preference.to_dict() for preference in preference_aggregator.aggregate(store.list_events())
+        preference.to_dict()
+        for preference in preference_aggregator.aggregate(
+            store.list_events(user_id=clean_user_id)
+        )
     ]
 
     return {

@@ -58,7 +58,9 @@ def test_feedback_to_preference_to_planner_prompt_pipeline(tmp_path):
         text_agent,
         calendar_getter=lambda _: [],
         todo_getter=lambda: [],
-        preference_getter=lambda: get_user_preferences(event_store=store),
+        preference_getter=lambda: get_user_preferences(
+            user_id="mike", event_store=store
+        ),
     )
 
     plan = asyncio.run(planner.create_daily_plan("Plan a gym session", target_date="2026-08-18"))

@@ -4,6 +4,7 @@ import json
 import pytest
 
 from planner_agents.planner_agent import (
+    PlanDraft,
     PlanValidationError,
     PlannerAgent,
     PlannerOutputError,
@@ -107,6 +108,67 @@ def test_planner_routes_calendar_preferences_and_weather():
     assert weather_calls == [("Chicago", "2026-08-07")]
     assert "Fixed meeting" in fake_agent.prompts[0]
     assert "focus_time" in fake_agent.prompts[0]
+
+
+def test_sdk_planner_prefetches_context_before_model_generation(monkeypatch):
+    calendar_calls: list[str] = []
+    todo_calls: list[str] = []
+    preference_calls: list[str] = []
+    prompts: list[str] = []
+
+    def calendar_getter(target_date: str) -> list[dict]:
+        calendar_calls.append(target_date)
+        return fixed_calendar(target_date)
+
+    def todo_getter() -> list[dict]:
+        todo_calls.append("called")
+        return [
+            {
+                "id": "todo-1",
+                "title": "Prepare slides",
+                "priority": "高",
+                "estimated_minutes": 60,
+                "deadline": None,
+                "category": "work",
+                "status": "待处理",
+            }
+        ]
+
+    def preference_getter() -> dict:
+        preference_calls.append("called")
+        return {"focus_time": "morning"}
+
+    planner = PlannerAgent(
+        sdk_model=object(),
+        calendar_getter=calendar_getter,
+        todo_getter=todo_getter,
+        preference_getter=preference_getter,
+    )
+    monkeypatch.setattr(
+        planner,
+        "_build_sdk_agent",
+        lambda *args, **kwargs: (object(), {}, []),
+    )
+
+    async def generate(_agent, prompt: str) -> PlanDraft:
+        prompts.append(prompt)
+        return PlanDraft.model_validate(json.loads(plan_json(("Prepare slides", "09:00", "10:00"))))
+
+    monkeypatch.setattr(planner, "_generate_draft_with_sdk", generate)
+
+    result = asyncio.run(
+        planner.create_daily_plan("Prepare presentation", target_date="2026-08-07")
+    )
+
+    assert calendar_calls == ["2026-08-07"]
+    assert todo_calls == ["called"]
+    assert preference_calls == ["called"]
+    assert result.tools_used == ["calendar", "todo", "preferences"]
+    assert result.calendar_events_considered == 1
+    assert result.todo_items_considered == 1
+    assert "Fixed meeting" in prompts[0]
+    assert "Prepare slides" in prompts[0]
+    assert "focus_time" in prompts[0]
 
 
 def test_planner_skips_weather_for_indoor_goal():

@@ -21,9 +21,8 @@ def _event(day: int, new_hour: int, *, action: str = "MOVE") -> EditEvent:
 
 
 def test_aggregator_creates_time_preference_from_repeated_moves():
-    preferences = PreferenceAggregator(minimum_evidence=3).aggregate(
-        [_event(10, 20), _event(12, 20), _event(15, 20)]
-    )
+    events = [_event(10, 20), _event(12, 20), _event(15, 20)]
+    preferences = PreferenceAggregator(minimum_evidence=3).aggregate(events)
 
     assert len(preferences) == 1
     preference = preferences[0]
@@ -32,6 +31,7 @@ def test_aggregator_creates_time_preference_from_repeated_moves():
     assert preference.attribute == "preferred_time_range"
     assert preference.value == {"start": "20:00", "end": "21:00"}
     assert preference.evidence_count == 3
+    assert preference.evidence_event_ids == tuple(event.event_id for event in events)
     assert preference.confidence >= 0.7
 
 
@@ -80,4 +80,5 @@ def test_behavior_preference_rejects_backwards_time_range():
             value={"start": "21:00", "end": "20:00"},
             confidence=0.8,
             evidence_count=3,
+            evidence_event_ids=("event-1", "event-2", "event-3"),
         )

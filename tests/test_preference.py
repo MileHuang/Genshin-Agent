@@ -37,7 +37,7 @@ def test_preferences_include_learned_time_preference_from_behavior_history(tmp_p
             )
         )
 
-    preferences = get_user_preferences(event_store=store)
+    preferences = get_user_preferences(user_id="mike", event_store=store)
 
     learned = preferences["学习到的偏好"]
     assert len(learned) == 1
@@ -45,4 +45,32 @@ def test_preferences_include_learned_time_preference_from_behavior_history(tmp_p
     assert learned[0]["attribute"] == "preferred_time_range"
     assert learned[0]["value"] == {"start": "20:00", "end": "21:00"}
     assert learned[0]["evidence_count"] == 3
+    assert len(learned[0]["evidence_event_ids"]) == 3
     assert learned[0]["confidence"] == 0.76
+
+
+def test_preferences_do_not_mix_users(tmp_path):
+    store = EditEventStore(tmp_path / "behavior_history.jsonl")
+    for user_id in ("mike", "mile"):
+        for day in (10, 12, 15):
+            store.append(
+                EditEvent(
+                    action="ACCEPT",
+                    activity_type=f"{user_id}-activity",
+                    user_id=user_id,
+                    original_start=datetime(
+                        2026, 8, day, 19, 0, tzinfo=timezone.utc
+                    ),
+                    original_end=datetime(
+                        2026, 8, day, 20, 0, tzinfo=timezone.utc
+                    ),
+                    source_plan_id=f"{user_id}-plan-{day}",
+                )
+            )
+
+    preferences = get_user_preferences(user_id="mike", event_store=store)
+
+    learned = preferences["学习到的偏好"]
+    assert [preference["activity_type"] for preference in learned] == [
+        "mike-activity"
+    ]

@@ -24,7 +24,7 @@ class EditAction(str, Enum):
     SKIP = "SKIP"
 
 
-@dataclass
+@dataclass(frozen=True)
 class EditEvent:
     """一次用户对某个计划项的反馈。
 
@@ -45,22 +45,40 @@ class EditEvent:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
-        self.action = EditAction(self.action)
-        self.activity_type = _required_text("activity_type", self.activity_type)
-        self.source_plan_id = _required_text("source_plan_id", self.source_plan_id)
-        self.user_id = _required_text("user_id", self.user_id)
-        self.event_id = _required_text("event_id", self.event_id)
-        self.reason = _optional_text(self.reason)
-        self.original_start = _require_datetime("original_start", self.original_start)
-        self.original_end = _require_datetime("original_end", self.original_end)
-        self.timestamp = _require_datetime("timestamp", self.timestamp)
+        object.__setattr__(self, "action", EditAction(self.action))
+        object.__setattr__(
+            self, "activity_type", _required_text("activity_type", self.activity_type)
+        )
+        object.__setattr__(
+            self, "source_plan_id", _required_text("source_plan_id", self.source_plan_id)
+        )
+        object.__setattr__(self, "user_id", _required_text("user_id", self.user_id))
+        object.__setattr__(self, "event_id", _required_text("event_id", self.event_id))
+        object.__setattr__(self, "reason", _optional_text(self.reason))
+        object.__setattr__(
+            self,
+            "original_start",
+            _require_datetime("original_start", self.original_start),
+        )
+        object.__setattr__(
+            self,
+            "original_end",
+            _require_datetime("original_end", self.original_end),
+        )
+        object.__setattr__(
+            self, "timestamp", _require_datetime("timestamp", self.timestamp)
+        )
 
         if self.original_start >= self.original_end:
             raise ValueError("original_end 必须晚于 original_start")
 
         if self.action is EditAction.MOVE:
-            self.new_start = _require_datetime("new_start", self.new_start)
-            self.new_end = _require_datetime("new_end", self.new_end)
+            object.__setattr__(
+                self, "new_start", _require_datetime("new_start", self.new_start)
+            )
+            object.__setattr__(
+                self, "new_end", _require_datetime("new_end", self.new_end)
+            )
             if self.new_start >= self.new_end:
                 raise ValueError("new_end 必须晚于 new_start")
             if (
@@ -88,7 +106,10 @@ class EditEvent:
         parsed = dict(data)
         for name in ("original_start", "original_end", "new_start", "new_end", "timestamp"):
             if parsed.get(name) is not None:
-                parsed[name] = datetime.fromisoformat(parsed[name])
+                value = datetime.fromisoformat(parsed[name])
+                # Older local demo files stored naive datetimes. Interpret those
+                # using the machine's local timezone during the one-way read.
+                parsed[name] = value.astimezone() if value.tzinfo is None else value
         return cls(**parsed)
 
 
@@ -159,4 +180,6 @@ def _optional_text(value: str | None) -> str | None:
 def _require_datetime(name: str, value: datetime | None) -> datetime:
     if not isinstance(value, datetime):
         raise ValueError(f"{name} 必须是 datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} 必须包含时区")
     return value

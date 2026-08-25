@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 
-@dataclass
+@dataclass(frozen=True)
 class BehaviorPreference:
     """Planner 可以直接消费的一条行为偏好。
 
@@ -22,22 +22,35 @@ class BehaviorPreference:
     value: dict[str, str]
     confidence: float
     evidence_count: int
+    evidence_event_ids: tuple[str, ...]
     user_id: str = "default"
     preference_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
-        self.category = _required_text("category", self.category)
-        self.activity_type = _required_text("activity_type", self.activity_type)
-        self.attribute = _required_text("attribute", self.attribute)
-        self.user_id = _required_text("user_id", self.user_id)
-        self.preference_id = _required_text("preference_id", self.preference_id)
+        object.__setattr__(self, "category", _required_text("category", self.category))
+        object.__setattr__(
+            self, "activity_type", _required_text("activity_type", self.activity_type)
+        )
+        object.__setattr__(self, "attribute", _required_text("attribute", self.attribute))
+        object.__setattr__(self, "user_id", _required_text("user_id", self.user_id))
+        object.__setattr__(
+            self, "preference_id", _required_text("preference_id", self.preference_id)
+        )
         if not isinstance(self.evidence_count, int) or self.evidence_count < 1:
             raise ValueError("evidence_count 必须是正整数")
         if not isinstance(self.confidence, (int, float)) or not 0 <= self.confidence <= 1:
             raise ValueError("confidence 必须在 0 到 1 之间")
-        self.confidence = float(self.confidence)
+        object.__setattr__(self, "confidence", float(self.confidence))
+        if not isinstance(self.evidence_event_ids, tuple):
+            raise ValueError("evidence_event_ids 必须是 tuple")
+        if len(set(self.evidence_event_ids)) != len(self.evidence_event_ids):
+            raise ValueError("evidence_event_ids 不能重复")
+        if len(self.evidence_event_ids) != self.evidence_count:
+            raise ValueError("evidence_count 必须等于证据事件数量")
+        if any(not isinstance(event_id, str) or not event_id.strip() for event_id in self.evidence_event_ids):
+            raise ValueError("evidence_event_ids 必须包含非空字符串")
         if self.attribute in {"preferred_time_range", "avoid_time_range"}:
             _validate_time_range(self.value)
         else:
@@ -49,6 +62,7 @@ class BehaviorPreference:
         """转换成可保存或传递给 Planner 的 JSON 结构。"""
 
         data = asdict(self)
+        data["evidence_event_ids"] = list(self.evidence_event_ids)
         data["created_at"] = self.created_at.isoformat()
         data["updated_at"] = self.updated_at.isoformat()
         return data

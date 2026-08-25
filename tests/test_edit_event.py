@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
 import pytest
@@ -30,6 +31,28 @@ def test_move_event_round_trips_through_store(tmp_path):
     assert saved_events[0].original_start == _time(19)
     assert saved_events[0].new_start == _time(20)
     assert saved_events[0].event_id == event.event_id
+
+
+def test_edit_event_is_immutable_and_requires_timezone():
+    event = EditEvent(
+        action="ACCEPT",
+        activity_type="gym",
+        original_start=_time(19),
+        original_end=_time(20),
+        source_plan_id="plan-2026-08-18",
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        event.reason = "changed later"
+
+    with pytest.raises(ValueError, match="时区"):
+        EditEvent(
+            action="ACCEPT",
+            activity_type="gym",
+            original_start=datetime(2026, 8, 18, 19, 0),
+            original_end=datetime(2026, 8, 18, 20, 0),
+            source_plan_id="plan-2026-08-18",
+        )
 
 
 @pytest.mark.parametrize("action", [EditAction.ACCEPT, EditAction.DELETE, EditAction.SKIP])

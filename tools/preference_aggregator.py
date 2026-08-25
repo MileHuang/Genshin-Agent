@@ -72,6 +72,7 @@ class PreferenceAggregator:
                     value={"level": "low"},
                     confidence=_count_confidence(len(activity_events), self.minimum_evidence),
                     evidence_count=len(activity_events),
+                    evidence_event_ids=tuple(event.event_id for event in activity_events),
                     user_id=user_id,
                 )
             )
@@ -100,6 +101,7 @@ class PreferenceAggregator:
             },
             confidence=_confidence(start_minutes, self.minimum_evidence),
             evidence_count=len(activity_events),
+            evidence_event_ids=tuple(event.event_id for event in activity_events),
             user_id=user_id,
         )
 
