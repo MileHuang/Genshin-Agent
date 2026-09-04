@@ -50,9 +50,9 @@ class CalendarSyncStore:
         event_ids: Sequence[str],
     ) -> None:
         if not sync_key:
-            raise ValueError("sync_key 不能为空")
+            raise ValueError("sync_key must not be blank")
         if not event_ids:
-            raise ValueError("至少需要一个 Google Calendar event ID")
+            raise ValueError("at least one Google Calendar event ID is required")
 
         records = self._load()
         records[sync_key] = {
@@ -74,7 +74,7 @@ class CalendarSyncStore:
 
         records = self._load()
         if old_sync_key not in records:
-            raise ValueError("找不到需要更新的 Google Calendar 同步记录")
+            raise ValueError("Google Calendar sync record was not found")
         del records[old_sync_key]
         if event_ids:
             records[new_sync_key] = {
@@ -90,9 +90,9 @@ class CalendarSyncStore:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("无法读取 Google Calendar 同步记录") from exc
+            raise ValueError("unable to read Google Calendar sync records") from exc
         if not isinstance(payload, dict):
-            raise ValueError("Google Calendar 同步记录格式无效")
+            raise ValueError("Google Calendar sync record has an invalid format")
         return payload
 
     def _write(self, records: dict[str, dict[str, Any]]) -> None:

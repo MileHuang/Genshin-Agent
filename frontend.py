@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, time
@@ -31,6 +32,11 @@ from tools.calendar_sync_store import CalendarSyncStore, build_plan_sync_key
 from tools.todo_tool import TodoistConfigurationError, TodoistProvider, get_todos
 from tools.edit_event import EditAction, EditEventStore
 from tools.feedback_service import FeedbackService
+from tools.memory_context import (
+    DEFAULT_MEMORY_CONTROLS_PATH,
+    LocalMemoryContextService,
+    MemoryControlStore,
+)
 from tools.preference_aggregator import PreferenceAggregator
 
 
@@ -43,6 +49,7 @@ def build_planner(
     *,
     use_google_calendar: bool = False,
     use_todoist: bool = False,
+    memory_service: LocalMemoryContextService | None = None,
 ) -> PlannerAgent:
     """Create either the deterministic demo planner or the configured live one."""
 
@@ -58,15 +65,18 @@ def build_planner(
         if use_todoist
         else get_todos
     )
+    service = memory_service or LocalMemoryContextService()
     if not demo_mode:
         return PlannerAgent(
             calendar_getter=calendar_getter,
             todo_getter=todo_getter,
+            memory_getter=service.get_memory_context,
         )
     return PlannerAgent(
         DemoTextAgent(),
         calendar_getter=calendar_getter,
         todo_getter=todo_getter,
+        memory_getter=service.get_memory_context,
         weather_getter=lambda location, target_date: get_weather(
             location,
             target_date,
@@ -80,11 +90,11 @@ def schedule_rows(plan: DailyPlan) -> list[dict[str, str]]:
 
     return [
         {
-            "时间": f"{item.start_time} – {item.end_time}",
-            "事项": item.title,
-            "优先级": item.priority,
-            "分类": item.category,
-            "备注": item.notes,
+            "Time": f"{item.start_time} - {item.end_time}",
+            "Item": item.title,
+            "Priority": item.priority,
+            "Category": item.category,
+            "Notes": item.notes,
         }
         for item in plan.schedule
     ]
@@ -120,13 +130,14 @@ def apply_schedule_feedback(
     new_end: time | None = None,
     google_calendar: GoogleCalendarProvider | None = None,
     google_event_id: str | None = None,
+    user_id: str = "default",
 ) -> str:
     """Persist one feedback event and update the displayed plan in place."""
 
     try:
         item = plan.schedule[item_index]
     except IndexError as exc:
-        raise ValueError("找不到要调整的日程项。") from exc
+        raise ValueError("The selected schedule item does not exist.") from exc
 
     original_start = datetime.combine(
         plan.date, _parse_time(item.start_time)
@@ -137,29 +148,30 @@ def apply_schedule_feedback(
         "original_start": original_start,
         "original_end": original_end,
         "source_plan_id": f"daily-plan-{plan.date.isoformat()}",
+        "user_id": user_id,
     }
 
     if action == "accept":
         feedback_service.accept(**fields)
-        return f"已记录 ACCEPT：{item.title}。"
+        return f"Recorded ACCEPT for {item.title}."
     if action == "skip":
         feedback_service.skip(**fields)
         plan.schedule.pop(item_index)
-        return f"已记录 SKIP：{item.title}。"
+        return f"Recorded SKIP for {item.title}."
     if action == "delete":
         if google_calendar is not None and google_event_id is not None:
             google_calendar.delete_event(google_event_id)
         feedback_service.delete(**fields)
         plan.schedule.pop(item_index)
-        suffix = "，并已从 Google Calendar 删除。" if google_event_id else "。"
-        return f"已记录 DELETE：{item.title}{suffix}"
+        suffix = " and deleted it from Google Calendar." if google_event_id else "."
+        return f"Recorded DELETE for {item.title}{suffix}"
     if new_start is None or new_end is None:
-        raise ValueError("请选择新的开始和结束时间。")
+        raise ValueError("Select both a new start and end time.")
 
     move_start = datetime.combine(plan.date, new_start).astimezone()
     move_end = datetime.combine(plan.date, new_end).astimezone()
     if move_start >= move_end:
-        raise ValueError("结束时间必须晚于开始时间。")
+        raise ValueError("The end time must be later than the start time.")
     _ensure_no_schedule_conflict(plan, item_index, move_start, move_end)
     if google_calendar is not None and google_event_id is not None:
         google_calendar.update_event(
@@ -180,8 +192,8 @@ def apply_schedule_feedback(
     item.start_time = new_start.strftime("%H:%M")
     item.end_time = new_end.strftime("%H:%M")
     plan.schedule.sort(key=lambda schedule_item: schedule_item.start_time)
-    suffix = "，并已更新 Google Calendar。" if google_event_id else "。"
-    return f"已记录 MOVE：{item.title}{suffix}"
+    suffix = " and updated Google Calendar." if google_event_id else "."
+    return f"Recorded MOVE for {item.title}{suffix}"
 
 
 def _parse_time(value: str) -> time:
@@ -207,7 +219,9 @@ def _ensure_no_schedule_conflict(
         ).astimezone()
         item_end = datetime.combine(plan.date, _parse_time(item.end_time)).astimezone()
         if start < item_end and item_start < end:
-            raise ValueError(f"新时间与“{item.title}”冲突，请选择其他时间。")
+            raise ValueError(
+                f'The new time conflicts with "{item.title}". Choose another time.'
+            )
 
 
 def get_learning_summary(
@@ -241,6 +255,8 @@ def generate_plan(
     demo_mode: bool,
     use_google_calendar: bool = False,
     use_todoist: bool = False,
+    user_id: str = "default",
+    memory_service: LocalMemoryContextService | None = None,
 ) -> DailyPlan:
     """Run the async planner from Streamlit's synchronous execution model."""
 
@@ -248,20 +264,27 @@ def generate_plan(
         demo_mode,
         use_google_calendar=use_google_calendar,
         use_todoist=use_todoist,
+        memory_service=memory_service,
     )
     return asyncio.run(
         planner.create_daily_plan(
             goal,
             target_date=target_date,
             location=location.strip() or None,
+            user_id=user_id,
         )
     )
 
 
-def render_plan(plan: DailyPlan, *, allow_calendar_sync: bool = False) -> None:
+def render_plan(
+    plan: DailyPlan,
+    *,
+    allow_calendar_sync: bool = False,
+    user_id: str = "default",
+) -> None:
     """Render a validated plan and its supporting context."""
 
-    status = "已通过冲突校验" if plan.validation.is_valid else "存在冲突"
+    status = "Conflict checks passed" if plan.validation.is_valid else "Conflicts found"
     if plan.validation.is_valid:
         st.success(status)
     else:
@@ -269,38 +292,42 @@ def render_plan(plan: DailyPlan, *, allow_calendar_sync: bool = False) -> None:
     st.subheader(plan.summary)
 
     metric_columns = st.columns(4)
-    metric_columns[0].metric("日程项", len(plan.schedule))
-    metric_columns[1].metric("固定事件", plan.calendar_events_considered)
-    metric_columns[2].metric("待办事项", plan.todo_items_considered)
-    metric_columns[3].metric("使用工具", len(plan.tools_used))
+    metric_columns[0].metric("Plan items", len(plan.schedule))
+    metric_columns[1].metric("Fixed events", plan.calendar_events_considered)
+    metric_columns[2].metric("Todo items", plan.todo_items_considered)
+    metric_columns[3].metric("Memory rules", plan.memory_preferences_considered)
 
     st.dataframe(
         schedule_rows(plan),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "时间": st.column_config.TextColumn(width="small"),
-            "事项": st.column_config.TextColumn(width="medium"),
-            "备注": st.column_config.TextColumn(width="large"),
+            "Time": st.column_config.TextColumn(width="small"),
+            "Item": st.column_config.TextColumn(width="medium"),
+            "Notes": st.column_config.TextColumn(width="large"),
         },
     )
 
-    render_feedback_controls(plan, sync_google_calendar=allow_calendar_sync)
-    render_learning_dashboard()
+    render_feedback_controls(
+        plan,
+        sync_google_calendar=allow_calendar_sync,
+        user_id=user_id,
+    )
+    render_learning_dashboard(user_id=user_id)
     if allow_calendar_sync:
         sync_key = calendar_sync_key(plan)
         sync_store = CalendarSyncStore()
-        st.markdown("#### 同步到 Google Calendar")
-        st.caption("只会在你点击确认后创建当前计划中的日程。")
+        st.markdown("#### Sync to Google Calendar")
+        st.caption("Events are created only after explicit confirmation.")
         try:
             already_synced = sync_store.is_synced(sync_key)
         except ValueError as exc:
-            st.error(f"无法读取同步记录：{exc}")
+            st.error(f"Unable to read the sync record: {exc}")
             already_synced = True
         if already_synced:
-            st.success("这份计划已同步到 Google Calendar，不会重复创建。")
+            st.success("This plan is already synced and will not be duplicated.")
         if st.button(
-            "已同步" if already_synced else f"确认同步 {len(plan.schedule)} 项日程",
+            "Synced" if already_synced else f"Confirm sync of {len(plan.schedule)} items",
             type="primary",
             disabled=already_synced,
         ):
@@ -315,20 +342,20 @@ def render_plan(plan: DailyPlan, *, allow_calendar_sync: bool = False) -> None:
                     event_ids=created,
                 )
                 st.session_state["calendar_synced_plan_key"] = sync_key
-                st.success(f"已创建 {len(created)} 项 Google Calendar 日程。")
+                st.success(f"Created {len(created)} Google Calendar events.")
             except (CalendarConfigurationError, CalendarOperationError, ValueError) as exc:
-                st.error(f"Google Calendar 同步失败：{exc}")
+                st.error(f"Google Calendar sync failed: {exc}")
 
     left, right = st.columns(2)
     with left:
-        st.markdown("#### 规划依据")
-        st.write("、".join(plan.tools_used) or "无")
+        st.markdown("#### Planning context")
+        st.write(", ".join(plan.tools_used) or "None")
         if plan.assumptions:
-            st.markdown("#### 重要假设")
+            st.markdown("#### Assumptions")
             for assumption in plan.assumptions:
                 st.write(f"• {assumption}")
     with right:
-        st.markdown("#### 天气")
+        st.markdown("#### Weather")
         if plan.weather:
             weather: dict[str, Any] = plan.weather
             st.write(f"**{weather.get('location', '')}** · {weather.get('condition', '')}")
@@ -338,9 +365,9 @@ def render_plan(plan: DailyPlan, *, allow_calendar_sync: bool = False) -> None:
                 st.write(f"{low}°C – {high}°C")
             st.caption(str(weather.get("planning_advice", "")))
         else:
-            st.caption("本次目标不需要天气信息。")
+            st.caption("This goal does not require weather context.")
 
-    with st.expander("查看完整 JSON"):
+    with st.expander("View complete JSON"):
         st.json(plan.model_dump(mode="json"))
 
 
@@ -348,40 +375,47 @@ def render_feedback_controls(
     plan: DailyPlan,
     *,
     sync_google_calendar: bool = False,
+    user_id: str = "default",
 ) -> None:
     """Render interactive schedule feedback controls below a generated plan."""
 
-    st.markdown("#### 调整计划并帮助我学习")
-    st.caption("接受、跳过、删除或移动日程；操作会保存为你的偏好学习证据。")
+    st.markdown("#### Adjust the plan and teach memory")
+    st.caption(
+        "Accept, skip, delete, or move an item. Each action becomes "
+        "explainable preference evidence."
+    )
     feedback_service = FeedbackService(EditEventStore(BEHAVIOR_HISTORY_PATH))
 
     for index, item in enumerate(plan.schedule):
         with st.expander(f"{item.start_time}–{item.end_time} · {item.title}"):
             accept_column, skip_column, delete_column = st.columns(3)
-            if accept_column.button("接受", key=f"accept-{index}"):
+            if accept_column.button("Accept", key=f"accept-{index}"):
                 _handle_feedback_action(
                     plan, index, "accept", feedback_service,
                     sync_google_calendar=sync_google_calendar,
+                    user_id=user_id,
                 )
-            if skip_column.button("跳过", key=f"skip-{index}"):
+            if skip_column.button("Skip", key=f"skip-{index}"):
                 _handle_feedback_action(
                     plan, index, "skip", feedback_service,
                     sync_google_calendar=sync_google_calendar,
+                    user_id=user_id,
                 )
-            if delete_column.button("删除", key=f"delete-{index}"):
+            if delete_column.button("Delete", key=f"delete-{index}"):
                 _handle_feedback_action(
                     plan, index, "delete", feedback_service,
                     sync_google_calendar=sync_google_calendar,
+                    user_id=user_id,
                 )
 
             start_column, end_column, move_column = st.columns(3)
             new_start = start_column.time_input(
-                "新开始时间", value=_parse_time(item.start_time), key=f"start-{index}"
+                "New start", value=_parse_time(item.start_time), key=f"start-{index}"
             )
             new_end = end_column.time_input(
-                "新结束时间", value=_parse_time(item.end_time), key=f"end-{index}"
+                "New end", value=_parse_time(item.end_time), key=f"end-{index}"
             )
-            if move_column.button("移动到此时间", key=f"move-{index}"):
+            if move_column.button("Move to this time", key=f"move-{index}"):
                 _handle_feedback_action(
                     plan,
                     index,
@@ -390,6 +424,7 @@ def render_feedback_controls(
                     new_start=new_start,
                     new_end=new_end,
                     sync_google_calendar=sync_google_calendar,
+                    user_id=user_id,
                 )
 
 
@@ -402,6 +437,7 @@ def _handle_feedback_action(
     new_start: time | None = None,
     new_end: time | None = None,
     sync_google_calendar: bool = False,
+    user_id: str = "default",
 ) -> None:
     try:
         original_sync_key = calendar_sync_key(plan)
@@ -423,6 +459,7 @@ def _handle_feedback_action(
             new_end=new_end,
             google_calendar=GoogleCalendarProvider() if event_id else None,
             google_event_id=event_id,
+            user_id=user_id,
         )
         if sync_record and action != "accept":
             sync_store.replace(
@@ -438,38 +475,44 @@ def _handle_feedback_action(
     st.rerun()
 
 
-def render_learning_dashboard() -> None:
+def render_learning_dashboard(*, user_id: str = "default") -> None:
     """Show the local evidence and preferences produced by feedback actions."""
 
-    summary = get_learning_summary(EditEventStore(BEHAVIOR_HISTORY_PATH))
+    summary = get_learning_summary(
+        EditEventStore(BEHAVIOR_HISTORY_PATH),
+        user_id=user_id,
+    )
     required = summary["minimum_evidence"]
     action_counts: Counter[str] = summary["action_counts"]
 
-    with st.expander("我学到了什么", expanded=False):
-        st.caption(f"同一活动的同类反馈达到 {required} 次后，才会形成长期偏好。")
+    with st.expander("What memory has learned", expanded=False):
+        st.caption(
+            f"A behavioral preference appears after {required} matching "
+            "feedback events for the same activity."
+        )
         metrics = st.columns(5)
-        metrics[0].metric("总反馈", summary["total_events"])
+        metrics[0].metric("Total feedback", summary["total_events"])
         for column, action in zip(metrics[1:], EditAction, strict=True):
             column.metric(action.value, action_counts[action.value])
 
         evidence_rows = [
             {
-                "活动": activity_type.replace("_", " "),
-                "反馈": action,
-                "证据次数": count,
-                "距离学习": max(0, required - count),
+                "Activity": activity_type.replace("_", " "),
+                "Feedback": action,
+                "Evidence": count,
+                "Until learned": max(0, required - count),
             }
             for (activity_type, action), count in sorted(summary["evidence"].items())
         ]
         if evidence_rows:
-            st.markdown("##### 证据进度")
+            st.markdown("##### Evidence progress")
             st.dataframe(evidence_rows, use_container_width=True, hide_index=True)
         else:
-            st.info("还没有反馈记录。先对一项日程点击接受、跳过、删除或移动。")
+            st.info("No feedback yet. Accept, skip, delete, or move a plan item.")
 
         preferences: list[dict[str, Any]] = summary["preferences"]
         if preferences:
-            st.markdown("##### 已形成的偏好")
+            st.markdown("##### Learned preferences")
             for preference in preferences:
                 activity = str(preference["activity_type"]).replace("_", " ")
                 attribute = preference["attribute"]
@@ -477,10 +520,134 @@ def render_learning_dashboard() -> None:
                 confidence = float(preference["confidence"])
                 st.success(
                     f"{activity} · {attribute} · {value} "
-                    f"（置信度 {confidence:.0%}，证据 {preference['evidence_count']} 次）"
+                    f"(confidence {confidence:.0%}, "
+                    f"{preference['evidence_count']} evidence events)"
                 )
         else:
-            st.caption("达到证据阈值后，已形成的偏好会显示在这里。")
+            st.caption("Preferences appear here after reaching the evidence threshold.")
+
+
+def parse_preference_value(raw_value: str) -> dict[str, str]:
+    """Parse and validate a learned-preference value edited in the UI."""
+
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Preference value must be valid JSON") from exc
+    if not isinstance(value, dict) or not value:
+        raise ValueError("Preference value must be a non-empty JSON object")
+    if any(not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()):
+        raise ValueError("Preference value keys and values must be strings")
+    return value
+
+
+def render_memory_page(
+    user_id: str,
+    *,
+    memory_service: LocalMemoryContextService | None = None,
+) -> None:
+    """Render inspect, edit, pause, resume, and forget controls for memory."""
+
+    service = memory_service or LocalMemoryContextService(
+        event_store=EditEventStore(BEHAVIOR_HISTORY_PATH),
+        control_store=MemoryControlStore(DEFAULT_MEMORY_CONTROLS_PATH),
+    )
+    context = service.get_memory_context(user_id, "")
+    st.header("Memory")
+    st.caption(
+        "Review explicit profile settings, learned preferences, and their "
+        "supporting evidence. Paused memories remain visible but are ignored "
+        "by the planner."
+    )
+
+    profile = context["profile"]
+    st.subheader("Profile memory")
+    with st.form("profile-memory-form"):
+        profile_values = {
+            "timezone": st.text_input("Timezone", value=str(profile.get("timezone", "local"))),
+            "wake_time": st.text_input("Wake time", value=str(profile.get("wake_time", "08:00"))),
+            "sleep_time": st.text_input("Sleep time", value=str(profile.get("sleep_time", "23:00"))),
+            "exercise_habit": st.text_input(
+                "Exercise habit", value=str(profile.get("exercise_habit", "evening"))
+            ),
+            "focus_period": st.text_input(
+                "Focus period", value=str(profile.get("focus_period", "morning"))
+            ),
+        }
+        if st.form_submit_button("Save profile"):
+            for key, value in profile_values.items():
+                service.update_profile_preference(user_id, key, value.strip())
+            st.success("Profile memory saved.")
+            st.rerun()
+
+    st.subheader("Behavioral preferences")
+    preferences = context["preferences"]
+    if not preferences:
+        st.info(
+            "No learned preferences yet. Three matching feedback events are "
+            "required before a preference is created."
+        )
+    for preference in preferences:
+        memory_id = str(preference["memory_id"])
+        activity = str(preference["activity_type"]).replace("_", " ")
+        status = str(preference["status"])
+        with st.expander(
+            f"{activity} - {preference['attribute']} ({status})",
+            expanded=True,
+        ):
+            st.caption(
+                f"Confidence {float(preference['confidence']):.0%}; "
+                f"evidence {preference['evidence_count']}; ID {memory_id}"
+            )
+            with st.form(f"edit-memory-{memory_id}"):
+                raw_value = st.text_area(
+                    "Value (JSON)",
+                    value=json.dumps(preference["value"], indent=2),
+                )
+                if st.form_submit_button("Save preference"):
+                    try:
+                        service.update_behavior_preference(
+                            user_id,
+                            memory_id,
+                            parse_preference_value(raw_value),
+                        )
+                    except (KeyError, ValueError) as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success("Behavioral preference updated.")
+                        st.rerun()
+
+            status_column, forget_column = st.columns(2)
+            target_status = "active" if status == "paused" else "paused"
+            status_label = "Resume" if status == "paused" else "Pause"
+            if status_column.button(status_label, key=f"status-{memory_id}"):
+                service.set_behavior_preference_status(
+                    user_id,
+                    memory_id,
+                    target_status,
+                )
+                st.rerun()
+            confirm_forget = forget_column.checkbox(
+                "Confirm forget",
+                key=f"confirm-forget-{memory_id}",
+            )
+            if forget_column.button(
+                "Forget",
+                key=f"forget-{memory_id}",
+                disabled=not confirm_forget,
+            ):
+                service.forget_memory(user_id, memory_id)
+                st.rerun()
+
+    st.subheader("Recent evidence")
+    if context["relevant_events"]:
+        st.dataframe(
+            context["relevant_events"],
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.caption("No feedback evidence has been recorded for this user.")
 
 
 def main() -> None:
@@ -500,50 +667,63 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.title("🗓️ Personal Planner")
-    st.caption("把目标、待办、日历、偏好和天气整理成一份可执行的每日计划。")
+    st.caption(
+        "Turn goals, todos, calendar events, memory, and weather into an "
+        "executable daily plan."
+    )
 
     with st.sidebar:
-        st.header("运行设置")
+        page = st.radio("Page", ("Planner", "Memory"))
+        user_id = st.text_input("User ID", value="default").strip() or "default"
+        st.header("Runtime settings")
         demo_mode = st.toggle(
-            "离线 Demo 模式",
+            "Offline demo mode",
             value=True,
-            help="无需 API Key，使用固定模型输出和模拟天气。",
+            help="Uses deterministic model output and mock weather without an API key.",
         )
         use_google_calendar = st.toggle(
-            "读取 Google Calendar",
+            "Read Google Calendar",
             value=False,
-            help="首次使用会打开浏览器，请使用自己的 Google 账号授权只读日历权限。",
+            help="The first use opens a browser for read-only OAuth consent.",
         )
         use_todoist = st.toggle(
-            "读取 Todoist 待办",
+            "Read Todoist tasks",
             value=False,
-            help="从本地 .env 的 TODOIST_API_TOKEN 读取未完成待办。",
+            help="Reads open tasks using TODOIST_API_TOKEN from the local .env file.",
         )
         st.info(
-            "离线 Demo 可立即体验界面。在线模式需要在 .env 中配置有效的 "
-            "MOONSHOT_API_KEY。"
+            "Offline demo mode works immediately. Live mode requires a valid "
+            "MOONSHOT_API_KEY in .env."
         )
 
+    memory_service = LocalMemoryContextService(
+        event_store=EditEventStore(BEHAVIOR_HISTORY_PATH),
+        control_store=MemoryControlStore(DEFAULT_MEMORY_CONTROLS_PATH),
+    )
+    if page == "Memory":
+        render_memory_page(user_id, memory_service=memory_service)
+        return
+
     with st.form("planner_form"):
-        goal = st.text_area("今天想完成什么？", value=DEMO_GOAL, height=130)
+        goal = st.text_area("What do you want to accomplish?", value=DEMO_GOAL, height=130)
         date_column, location_column = st.columns(2)
-        target_date = date_column.date_input("计划日期", value=date.today())
+        target_date = date_column.date_input("Plan date", value=date.today())
         location = location_column.text_input(
-            "地点（天气相关目标时填写）",
-            placeholder="例如：Madison, WI",
+            "Location (for weather-sensitive goals)",
+            placeholder="Example: Madison, WI",
         )
         submitted = st.form_submit_button(
-            "生成计划",
+            "Generate plan",
             type="primary",
             use_container_width=True,
         )
 
     if submitted:
         if not goal.strip():
-            st.warning("请先输入今天的目标。")
+            st.warning("Enter a goal before generating a plan.")
             return
         try:
-            with st.spinner("正在整理日程与约束…"):
+            with st.spinner("Collecting context and applying constraints..."):
                 st.session_state["daily_plan"] = generate_plan(
                     goal=goal,
                     target_date=target_date,
@@ -551,20 +731,22 @@ def main() -> None:
                     demo_mode=demo_mode,
                     use_google_calendar=use_google_calendar,
                     use_todoist=use_todoist,
+                    user_id=user_id,
+                    memory_service=memory_service,
                 )
                 # A newly generated plan is eligible for one explicit sync.
                 st.session_state.pop("calendar_synced_plan_key", None)
         except (CalendarConfigurationError, TodoistConfigurationError) as exc:
-            st.error(f"工具设置失败：{exc}")
+            st.error(f"Tool configuration failed: {exc}")
         except PlannerConfigurationError as exc:
             st.error(str(exc))
-            st.info("可以先开启左侧的“离线 Demo 模式”。")
+            st.info("Enable Offline demo mode in the sidebar to continue without an API key.")
         except AuthenticationError:
-            st.error("Moonshot 身份验证失败，请检查 .env 中的 API Key。")
+            st.error("Moonshot authentication failed. Check the API key in .env.")
         except (APIConnectionError, RateLimitError) as exc:
-            st.error(f"模型服务暂时不可用：{exc}")
+            st.error(f"The model service is temporarily unavailable: {exc}")
         except PlannerError as exc:
-            st.error(f"计划生成失败：{exc}")
+            st.error(f"Plan generation failed: {exc}")
 
     feedback_message = st.session_state.pop("feedback_message", None)
     if isinstance(feedback_message, str):
@@ -573,7 +755,11 @@ def main() -> None:
     plan = st.session_state.get("daily_plan")
     if isinstance(plan, DailyPlan):
         st.divider()
-        render_plan(plan, allow_calendar_sync=use_google_calendar)
+        render_plan(
+            plan,
+            allow_calendar_sync=use_google_calendar,
+            user_id=user_id,
+        )
 
 
 if __name__ == "__main__":

@@ -7,18 +7,18 @@ from tools.preference_tool import get_user_preferences
 def test_preferences_return_expected_mock_profile():
     preferences = get_user_preferences()
 
-    assert preferences["作息"]["起床时间"] == "08:00"
-    assert preferences["作息"]["睡觉时间"] == "23:00"
-    assert preferences["运动习惯"] == "晚上运动"
-    assert preferences["专注时间"] == "上午"
+    assert preferences["wake_time"] == "08:00"
+    assert preferences["sleep_time"] == "23:00"
+    assert preferences["exercise_habit"] == "evening"
+    assert preferences["focus_period"] == "morning"
 
 
 def test_preferences_are_new_values_on_each_call():
     first = get_user_preferences()
-    first["作息"]["起床时间"] = "12:00"
+    first["wake_time"] = "12:00"
 
     second = get_user_preferences()
-    assert second["作息"]["起床时间"] == "08:00"
+    assert second["wake_time"] == "08:00"
 
 
 def test_preferences_include_learned_time_preference_from_behavior_history(tmp_path):
@@ -39,7 +39,7 @@ def test_preferences_include_learned_time_preference_from_behavior_history(tmp_p
 
     preferences = get_user_preferences(user_id="mike", event_store=store)
 
-    learned = preferences["学习到的偏好"]
+    learned = preferences["learned_preferences"]
     assert len(learned) == 1
     assert learned[0]["activity_type"] == "gym"
     assert learned[0]["attribute"] == "preferred_time_range"
@@ -70,7 +70,7 @@ def test_preferences_do_not_mix_users(tmp_path):
 
     preferences = get_user_preferences(user_id="mike", event_store=store)
 
-    learned = preferences["学习到的偏好"]
+    learned = preferences["learned_preferences"]
     assert [preference["activity_type"] for preference in learned] == [
         "mike-activity"
     ]

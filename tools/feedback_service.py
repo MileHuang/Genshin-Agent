@@ -1,4 +1,4 @@
-"""将用户对计划的反馈转换为可持久化的 EditEvent。"""
+"""Convert user feedback into persistent edit events."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from tools.edit_event import EditAction, EditEvent, EditEventStore
 
 
 class FeedbackService:
-    """计划反馈的应用层入口。
+    """Application service for recording plan feedback.
 
-    UI、命令行或 API 只需调用这里的四个动作方法，不需要自己处理
-    EditEvent 的构造与保存细节。
+    A UI, CLI, or API can call the four action methods without constructing or
+    persisting edit events directly.
     """
 
     def __init__(self, event_store: EditEventStore) -> None:

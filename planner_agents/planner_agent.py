@@ -1,4 +1,4 @@
-"""基于 OpenAI Agents SDK 的每日计划 Agent，并使用确定性规则做冲突校验。"""
+"""Daily planner built on the OpenAI Agents SDK with deterministic checks."""
 
 from __future__ import annotations
 
@@ -27,28 +27,29 @@ from config.settings import (
     MOONSHOT_API_KEY,
 )
 from tools.calendar_tool import get_calendar_events
-from tools.preference_tool import get_user_preferences
+from tools.memory_context import get_memory_context
+from tools.memory_rules import apply_memory_rules
 from tools.todo_tool import get_todos
 from tools.validator_tool import validate_schedule
 from tools.weather_tool import get_weather
 
 
 class TextAgent(Protocol):
-    """离线测试用的最小文本 Agent 接口。"""
+    """Minimal text-agent interface used by offline tests."""
 
     async def run(self, prompt: str) -> str: ...
 
 
 class PlannerError(RuntimeError):
-    """计划生成流程的基础异常。"""
+    """Base exception for planner failures."""
 
 
 class PlannerOutputError(PlannerError):
-    """模型没有返回符合要求的结构时抛出。"""
+    """Raised when the model does not return the required structure."""
 
 
 class PlannerToolError(PlannerError):
-    """计划工具调用失败时抛出。"""
+    """Raised when a planning-context provider fails."""
 
 
 class PlannerConfigurationError(PlannerError):
@@ -56,19 +57,19 @@ class PlannerConfigurationError(PlannerError):
 
 
 class PlanValidationError(PlannerError):
-    """模型多次生成后仍然存在确定性冲突时抛出。"""
+    """Raised when generated output still has deterministic conflicts."""
 
 
 class PlanItem(BaseModel):
-    """每日计划中的一个日程项。"""
+    """One scheduled item in a daily plan."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: str = Field(min_length=1)
     start_time: str
     end_time: str
-    priority: Literal["低", "中", "高", "low", "medium", "high"] = "中"
-    category: str = Field(default="任务", min_length=1)
+    priority: Literal["low", "medium", "high"] = "medium"
+    category: str = Field(default="task", min_length=1)
     notes: str = ""
 
     @field_validator("start_time", "end_time")
@@ -77,28 +78,28 @@ class PlanItem(BaseModel):
         try:
             return datetime.strptime(value, "%H:%M").strftime("%H:%M")
         except (TypeError, ValueError) as exc:
-            raise ValueError("时间必须使用 24 小时制 HH:MM 格式") from exc
+            raise ValueError("time values must use 24-hour HH:MM format") from exc
 
     @model_validator(mode="after")
     def validate_interval(self) -> PlanItem:
         start = datetime.strptime(self.start_time, "%H:%M")
         end = datetime.strptime(self.end_time, "%H:%M")
         if start >= end:
-            raise ValueError("end_time 必须晚于 start_time")
+            raise ValueError("end_time must be later than start_time")
         return self
 
     def to_validator_item(self) -> dict[str, str]:
-        """转换为确定性日程冲突校验器使用的结构。"""
+        """Adapt the item to the deterministic schedule validator."""
 
         return {
-            "任务": self.title,
-            "开始时间": self.start_time,
-            "结束时间": self.end_time,
+            "task": self.title,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
         }
 
 
 class PlanDraft(BaseModel):
-    """模型在附加工具元数据之前需要返回的精确 JSON 结构。"""
+    """Exact JSON structure required from the model."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -110,7 +111,7 @@ class PlanDraft(BaseModel):
     def validate_chronological_order(self) -> PlanDraft:
         starts = [item.start_time for item in self.schedule]
         if starts != sorted(starts):
-            raise ValueError("schedule 必须按时间顺序排列")
+            raise ValueError("schedule must be in chronological order")
         return self
 
 
@@ -120,7 +121,7 @@ class PlanValidation(BaseModel):
 
 
 class DailyPlan(BaseModel):
-    """应用层最终拿到的结构化每日计划。"""
+    """Structured, validated daily plan returned to the application."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -132,48 +133,50 @@ class DailyPlan(BaseModel):
     tools_used: list[str] = Field(default_factory=list)
     calendar_events_considered: int = Field(ge=0)
     todo_items_considered: int = Field(default=0, ge=0)
+    memory_preferences_considered: int = Field(default=0, ge=0)
     weather: dict[str, Any] | None = None
     validation: PlanValidation
 
 
 PLANNER_PROMPT = """
-你是一个每日生活规划 Agent。请根据用户目标和工具上下文，生成一个现实可执行的一日计划。
+Create a realistic, executable daily plan from the user's goal and supplied
+context.
 
-上下文规则：
-- Calendar events 是固定日历事件，代表不可移动的占用时间，绝不能被挪动。
-- Todo items 是用户今天想完成的待办事项，应在现实可行的情况下尽量安排进日程。
-- User preferences 用来帮助个性化安排，例如作息、运动习惯、专注时间。
-  对“学习到的偏好”：优先采用 preferred_time_range，尽量避开 avoid_time_range，
-  对 deprioritize_activity 降低主动安排的优先级；用户当次明确提出的目标优先。
-- Weather 只用于调整户外、旅行、通勤、运动等和天气有关的活动。
+Context rules:
+- Calendar events are fixed commitments and must never be moved.
+- Todo items are tasks the user wants to complete; schedule pending items when
+  realistically possible.
+- Memory contains an explicit profile, evidence-backed behavioral preferences,
+  and goal-relevant events. Active preferences are soft constraints. Prefer
+  preferred_time_range, avoid avoid_time_range, and reduce proactive priority
+  for deprioritize_activity. The user's current explicit goal always wins.
+- Ignore paused preferences.
+- Weather only affects outdoor, travel, commute, or weather-sensitive activity.
 
-只返回一个 JSON object，结构必须严格如下：
+Return exactly one JSON object with this structure:
 {
-  "summary": "简短说明今天计划的策略",
+  "summary": "brief planning strategy",
   "schedule": [
     {
-      "title": "具体可执行的活动",
+      "title": "specific executable activity",
       "start_time": "HH:MM",
       "end_time": "HH:MM",
-      "priority": "低|中|高",
-      "category": "简短分类",
-      "notes": "简短但有用的说明"
+      "priority": "low|medium|high",
+      "category": "short category",
+      "notes": "brief useful note"
     }
   ],
-  "assumptions": ["重要假设"]
+  "assumptions": ["material assumption"]
 }
 
-要求：
-- 时间必须使用 24 小时制 HH:MM。
-- schedule 必须按时间顺序排列。
-- 不要让新日程和固定日历事件重叠。
-- 只安排新的用户活动，不要把固定日历事件重复写成新任务。
-- 对 status 为“待处理”的 todo items，尽量安排进今天。
-- 要考虑现实的过渡时间、吃饭、休息和恢复。
-- 不要把一天排得过满。
-- 不要编造工具没有提供的日历、天气、todo 或个人信息。
-- 不要使用 Markdown 包裹 JSON。
-- 不要在 JSON 外添加任何解释。
+Requirements:
+- Use 24-hour HH:MM times and chronological order.
+- Do not overlap new items with each other or fixed calendar events.
+- Schedule only new user activities; do not repeat fixed events as tasks.
+- Include realistic transitions, meals, breaks, and recovery.
+- Keep the workload achievable.
+- Do not invent calendar, weather, todo, profile, or memory facts.
+- Do not wrap the JSON in Markdown or add text outside it.
 """.strip()
 
 
@@ -203,18 +206,8 @@ ENGLISH_WEATHER_KEYWORDS = {
 }
 
 
-CJK_WEATHER_KEYWORDS = {
-    "旅行",
-    "户外",
-    "天气",
-    "散步",
-    "跑步",
-    "通勤",
-}
-
-
 class PlannerAgent:
-    """使用 OpenAI Agents SDK 工具调用和确定性校验生成每日计划。"""
+    """Generate daily plans from tools, memory, and deterministic checks."""
 
     def __init__(
         self,
@@ -224,16 +217,18 @@ class PlannerAgent:
         calendar_getter: Callable[..., Any] = get_calendar_events,
         todo_getter: Callable[..., Any] = get_todos,
         weather_getter: Callable[..., Any] = get_weather,
-        preference_getter: Callable[..., Any] = get_user_preferences,
+        memory_getter: Callable[..., Any] = get_memory_context,
+        preference_getter: Callable[..., Any] | None = None,
         max_revision_attempts: int = 1,
     ) -> None:
         if max_revision_attempts < 0:
-            raise ValueError("max_revision_attempts 不能小于 0")
+            raise ValueError("max_revision_attempts must be non-negative")
         self.text_agent = text_agent
         self.sdk_model = sdk_model
         self.calendar_getter = calendar_getter
         self.todo_getter = todo_getter
         self.weather_getter = weather_getter
+        self.memory_getter = memory_getter
         self.preference_getter = preference_getter
         self.max_revision_attempts = max_revision_attempts
 
@@ -243,29 +238,35 @@ class PlannerAgent:
         *,
         target_date: str | date | None = None,
         location: str | None = None,
+        user_id: str = "default",
     ) -> DailyPlan:
-        """理解用户目标，调用工具，并返回通过校验的每日计划。"""
+        """Read planning context and return a conflict-free daily plan."""
 
         if not isinstance(goal, str) or not goal.strip():
-            raise ValueError("goal must not be blank / goal 不能为空")
+            raise ValueError("goal must not be blank")
 
         plan_date = _normalise_date(target_date or date.today())
         clean_goal = goal.strip()
         clean_location = location.strip() if isinstance(location, str) else None
         if location is not None and not clean_location:
-            raise ValueError("提供 location 时不能为空")
+            raise ValueError("location must not be blank when provided")
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ValueError("user_id must not be blank")
+        clean_user_id = user_id.strip()
 
         if self.text_agent is None:
             return await self._create_daily_plan_with_sdk(
                 clean_goal,
                 plan_date=plan_date,
                 location=clean_location,
+                user_id=clean_user_id,
             )
 
         return await self._create_daily_plan_with_text_agent(
             clean_goal,
             plan_date=plan_date,
             location=clean_location,
+            user_id=clean_user_id,
         )
 
     async def _create_daily_plan_with_text_agent(
@@ -274,8 +275,9 @@ class PlannerAgent:
         *,
         plan_date: str,
         location: str | None,
+        user_id: str,
     ) -> DailyPlan:
-        """离线测试用路径：不调用真实 SDK，只使用文本 Agent 替身。"""
+        """Offline path using a deterministic text-agent test double."""
 
         calendar_events = await self._call_tool(
             "calendar",
@@ -285,9 +287,9 @@ class PlannerAgent:
         todos = self._validate_todos(
             await self._call_tool("todo", self.todo_getter)
         )
-        preferences = await self._call_tool("preferences", self.preference_getter)
+        memory_context = await self._load_memory_context(user_id, clean_goal)
 
-        tools_used = ["calendar", "todo", "preferences"]
+        tools_used = ["calendar", "todo", "memory"]
 
         weather_context: dict[str, Any] | None = None
         routing_assumptions: list[str] = []
@@ -302,7 +304,7 @@ class PlannerAgent:
                 tools_used.append("weather")
             else:
                 routing_assumptions.append(
-                    "Weather was not checked because no location was provided / 因为没有提供 location，所以没有检查天气。"
+                    "Weather was not checked because no location was provided."
                 )
 
         initial_prompt = self._build_prompt(
@@ -310,7 +312,7 @@ class PlannerAgent:
             target_date=plan_date,
             calendar_events=calendar_events,
             todos=todos,
-            preferences=preferences,
+            memory_context=memory_context,
             weather=weather_context,
         )
 
@@ -321,6 +323,12 @@ class PlannerAgent:
                 prompt = self._build_revision_prompt(conflicts)
 
             draft = await self._generate_draft(prompt)
+            draft, memory_assumptions = self._apply_memory_context(
+                draft,
+                calendar_events,
+                memory_context,
+                clean_goal,
+            )
             validation = self._validate_draft(draft, calendar_events)
             if validation.is_valid:
                 return DailyPlan(
@@ -328,18 +336,25 @@ class PlannerAgent:
                     goal=clean_goal,
                     summary=draft.summary,
                     schedule=draft.schedule,
-                    assumptions=draft.assumptions + routing_assumptions,
+                    assumptions=(
+                        draft.assumptions
+                        + routing_assumptions
+                        + memory_assumptions
+                    ),
                     tools_used=tools_used,
                     calendar_events_considered=len(calendar_events),
                     todo_items_considered=len(todos),
+                    memory_preferences_considered=len(
+                        memory_context["preferences"]
+                    ),
                     weather=weather_context,
                     validation=validation,
                 )
             conflicts = validation.conflicts
 
-        conflict_text = "；".join(conflicts) or "未知冲突"
+        conflict_text = "; ".join(conflicts) or "unknown conflict"
         raise PlanValidationError(
-            f"Kimi could not produce a conflict-free plan / 无法生成无冲突计划：{conflict_text}"
+            f"Kimi could not produce a conflict-free plan: {conflict_text}"
         )
 
     async def _create_daily_plan_with_sdk(
@@ -348,8 +363,9 @@ class PlannerAgent:
         *,
         plan_date: str,
         location: str | None,
+        user_id: str,
     ) -> DailyPlan:
-        """先确定性获取上下文，再用 Agents SDK 生成结构化计划。"""
+        """Fetch context deterministically, then generate through the SDK."""
 
         calendar_events = await self._call_tool(
             "calendar", self.calendar_getter, plan_date
@@ -357,10 +373,8 @@ class PlannerAgent:
         todos = self._validate_todos(
             await self._call_tool("todo", self.todo_getter)
         )
-        preferences = await self._call_tool(
-            "preferences", self.preference_getter
-        )
-        tools_used = ["calendar", "todo", "preferences"]
+        memory_context = await self._load_memory_context(user_id, clean_goal)
+        tools_used = ["calendar", "todo", "memory"]
 
         weather_context: dict[str, Any] | None = None
         routing_assumptions: list[str] = []
@@ -372,7 +386,7 @@ class PlannerAgent:
                 tools_used.append("weather")
             else:
                 routing_assumptions.append(
-                    "Weather was not checked because no location was provided / 因为没有提供 location，所以没有检查天气。"
+                    "Weather was not checked because no location was provided."
                 )
 
         sdk_agent, _, _ = self._build_sdk_agent(
@@ -385,23 +399,28 @@ class PlannerAgent:
             target_date=plan_date,
             calendar_events=calendar_events,
             todos=todos,
-            preferences=preferences,
+            memory_context=memory_context,
             weather=weather_context,
         )
 
         conflicts: list[str] = []
-        last_draft: PlanDraft | None = None
         for attempt in range(self.max_revision_attempts + 1):
             prompt = initial_prompt
             if attempt:
                 prompt = (
                     f"{initial_prompt}\n\n"
-                    "上一版计划存在以下确定性时间冲突，请只返回修正后的完整 JSON：\n"
+                    "The previous plan had these deterministic conflicts. "
+                    "Return only a corrected complete JSON object:\n"
                     f"{json.dumps(conflicts, ensure_ascii=False)}"
                 )
 
             draft = await self._generate_draft_with_sdk(sdk_agent, prompt)
-            last_draft = draft
+            draft, memory_assumptions = self._apply_memory_context(
+                draft,
+                calendar_events,
+                memory_context,
+                clean_goal,
+            )
 
             validation = self._validate_draft(draft, calendar_events)
             if validation.is_valid:
@@ -410,23 +429,105 @@ class PlannerAgent:
                     goal=clean_goal,
                     summary=draft.summary,
                     schedule=draft.schedule,
-                    assumptions=draft.assumptions + routing_assumptions,
+                    assumptions=(
+                        draft.assumptions
+                        + routing_assumptions
+                        + memory_assumptions
+                    ),
                     tools_used=tools_used,
                     calendar_events_considered=len(calendar_events),
                     todo_items_considered=len(todos),
+                    memory_preferences_considered=len(
+                        memory_context["preferences"]
+                    ),
                     weather=weather_context,
                     validation=validation,
                 )
 
             conflicts = validation.conflicts
 
-        conflict_text = "；".join(conflicts) or "未知冲突"
+        conflict_text = "; ".join(conflicts) or "unknown conflict"
         raise PlanValidationError(
-            f"Kimi could not produce a conflict-free plan / 无法生成无冲突计划：{conflict_text}"
+            f"Kimi could not produce a conflict-free plan: {conflict_text}"
+        )
+
+    async def _load_memory_context(
+        self,
+        user_id: str,
+        goal: str,
+    ) -> dict[str, Any]:
+        """Load the shared memory contract or adapt a legacy preference getter."""
+
+        if self.preference_getter is not None:
+            legacy = await self._call_tool("memory", self.preference_getter)
+            if not isinstance(legacy, dict):
+                raise PlannerToolError("preference getter must return a dictionary")
+            learned = legacy.get("learned_preferences", [])
+            if not isinstance(learned, list):
+                raise PlannerToolError("learned_preferences must be a list")
+            profile = {
+                key: value
+                for key, value in legacy.items()
+                if key != "learned_preferences"
+            }
+            context = {
+                "profile": profile,
+                "preferences": learned,
+                "relevant_events": [],
+            }
+        else:
+            context = await self._call_tool(
+                "memory",
+                self.memory_getter,
+                user_id,
+                goal,
+            )
+        return self._validate_memory_context(context)
+
+    @staticmethod
+    def _validate_memory_context(context: object) -> dict[str, Any]:
+        if not isinstance(context, dict):
+            raise PlannerToolError("memory context must be a dictionary")
+        required = {"profile", "preferences", "relevant_events"}
+        missing = required - set(context)
+        if missing:
+            raise PlannerToolError(
+                f"memory context is missing fields: {', '.join(sorted(missing))}"
+            )
+        if not isinstance(context["profile"], dict):
+            raise PlannerToolError("memory profile must be a dictionary")
+        if not isinstance(context["preferences"], list):
+            raise PlannerToolError("memory preferences must be a list")
+        if not isinstance(context["relevant_events"], list):
+            raise PlannerToolError("relevant_events must be a list")
+        return context
+
+    @staticmethod
+    def _apply_memory_context(
+        draft: PlanDraft,
+        calendar_events: object,
+        memory_context: dict[str, Any],
+        goal: str,
+    ) -> tuple[PlanDraft, list[str]]:
+        if not isinstance(calendar_events, list):
+            raise PlannerToolError("calendar tool must return an event list")
+        schedule, explanations = apply_memory_rules(
+            [item.model_dump() for item in draft.schedule],
+            calendar_events,
+            memory_context,
+            goal=goal,
+        )
+        return (
+            PlanDraft(
+                summary=draft.summary,
+                schedule=schedule,
+                assumptions=draft.assumptions,
+            ),
+            explanations,
         )
 
     async def _generate_draft(self, prompt: str) -> PlanDraft:
-        """生成并解析 PlanDraft，保留离线 text_agent 兼容能力。"""
+        """Generate and parse a draft while retaining test-double support."""
 
         structured_runner = getattr(self.text_agent, "run_structured", None)
         if callable(structured_runner):
@@ -435,7 +536,7 @@ class PlannerAgent:
                 return PlanDraft.model_validate(result)
             except ValidationError as exc:
                 raise PlannerOutputError(
-                    f"Kimi 返回的每日计划结构无效：{exc}"
+                    f"Kimi returned an invalid daily-plan structure: {exc}"
                 ) from exc
 
         raw_output = await self.text_agent.run(prompt)
@@ -446,14 +547,14 @@ class PlannerAgent:
         sdk_agent: Any,
         prompt: str,
     ) -> PlanDraft:
-        """运行 OpenAI Agents SDK Agent，并归一化结构化输出。"""
+        """Run the Agents SDK and validate Kimi's JSON-compatible text."""
 
         try:
             from agents import Runner
         except ImportError as exc:
             raise RuntimeError(
-                "OpenAI Agents SDK 未安装。请运行 "
-                "`python -m pip install -r requirements.txt`。"
+                "OpenAI Agents SDK is not installed. Run "
+                "`python -m pip install -r requirements.txt`."
             ) from exc
 
         result = await Runner.run(sdk_agent, prompt)
@@ -462,11 +563,13 @@ class PlannerAgent:
             return output
         if isinstance(output, BaseModel):
             output = output.model_dump()
+        if isinstance(output, str):
+            return self._parse_draft(output)
         try:
             return PlanDraft.model_validate(output)
         except ValidationError as exc:
             raise PlannerOutputError(
-                f"Agents SDK 返回的每日计划结构无效：{exc}"
+                f"Agents SDK returned an invalid daily-plan structure: {exc}"
             ) from exc
 
     def _build_sdk_agent(
@@ -480,92 +583,15 @@ class PlannerAgent:
             from agents import (
                 Agent,
                 OpenAIChatCompletionsModel,
-                function_tool,
                 set_tracing_disabled,
             )
         except ImportError as exc:
             raise RuntimeError(
-                "OpenAI Agents SDK 未安装。请运行 "
-                "`python -m pip install -r requirements.txt`。"
+                "OpenAI Agents SDK is not installed. Run "
+                "`python -m pip install -r requirements.txt`."
             ) from exc
 
         set_tracing_disabled(disabled=True)
-        tool_state: dict[str, Any] = {
-            "calendar_events": None,
-            "todos": None,
-            "preferences": None,
-            "weather": None,
-            "calendar_used": False,
-            "todo_used": False,
-            "preferences_used": False,
-            "weather_used": False,
-        }
-
-        @function_tool
-        async def get_calendar_context() -> list[dict[str, Any]]:
-            """返回目标日期的固定日历事件。"""
-
-            tool_state["calendar_used"] = True
-            events = await self._call_tool(
-                "calendar",
-                self.calendar_getter,
-                plan_date,
-            )
-            tool_state["calendar_events"] = events
-            return events
-
-        @function_tool
-        async def get_todo_context() -> list[dict[str, Any]]:
-            """返回今天需要安排进日程的待办事项。"""
-
-            tool_state["todo_used"] = True
-            todos = self._validate_todos(
-                await self._call_tool("todo", self.todo_getter)
-            )
-            tool_state["todos"] = todos
-            return todos
-
-        @function_tool
-        async def get_preferences_context() -> dict[str, Any]:
-            """返回用户长期偏好，例如作息、运动习惯和专注时间。"""
-
-            tool_state["preferences_used"] = True
-            preferences = await self._call_tool(
-                "preferences",
-                self.preference_getter,
-            )
-            tool_state["preferences"] = preferences
-            return preferences
-
-        tools = [
-            get_calendar_context,
-            get_todo_context,
-            get_preferences_context,
-        ]
-
-        routing_assumptions: list[str] = []
-        if self._goal_needs_weather(goal):
-            if location:
-
-                @function_tool
-                async def get_weather_context() -> dict[str, Any]:
-                    """返回指定地点和日期的天气预报。"""
-
-                    tool_state["weather_used"] = True
-                    weather = await self._call_tool(
-                        "weather",
-                        self.weather_getter,
-                        location,
-                        plan_date,
-                    )
-                    tool_state["weather"] = weather
-                    return weather
-
-                tools.append(get_weather_context)
-            else:
-                routing_assumptions.append(
-                    "Weather was not checked because no location was provided / 因为没有提供 location，所以没有检查天气。"
-                )
 
         model = self.sdk_model
         if model is None:
@@ -586,8 +612,9 @@ class PlannerAgent:
 
         instructions = (
             f"{AGENT_SYSTEM_PROMPT}\n\n{PLANNER_PROMPT}\n\n"
-            "调用方会在消息中直接提供 calendar、todo、preference 和可选 weather "
-            "上下文。必须基于这些上下文生成计划，最终输出必须符合结构化输出 schema。"
+            "The caller supplies calendar, todo, memory, and optional weather "
+            "context directly in the message. Base the plan only on that context "
+            "and return no text outside the required JSON object."
         )
 
         sdk_agent = Agent(
@@ -595,17 +622,14 @@ class PlannerAgent:
             instructions=instructions,
             model=model,
             tools=[],
-            output_type=PlanDraft,
         )
-        return sdk_agent, tool_state, routing_assumptions
+        return sdk_agent, {}, []
 
     @staticmethod
     def _goal_needs_weather(goal: str) -> bool:
         lowered_goal = goal.casefold()
         english_words = set(re.findall(r"[a-z]+", lowered_goal))
-        return bool(english_words & ENGLISH_WEATHER_KEYWORDS) or any(
-            keyword in goal for keyword in CJK_WEATHER_KEYWORDS
-        )
+        return bool(english_words & ENGLISH_WEATHER_KEYWORDS)
 
     @staticmethod
     async def _call_tool(
@@ -619,9 +643,7 @@ class PlannerAgent:
                 result = await result
             return result
         except Exception as exc:
-            raise PlannerToolError(
-                f"{name} tool failed / {name} 工具调用失败：{exc}"
-            ) from exc
+            raise PlannerToolError(f"{name} tool failed: {exc}") from exc
 
     @staticmethod
     def _validate_todos(todos: object) -> list[dict[str, Any]]:
@@ -638,7 +660,7 @@ class PlannerAgent:
         target_date: str,
         calendar_events: object,
         todos: object,
-        preferences: object,
+        memory_context: object,
         weather: object,
     ) -> str:
         context = {
@@ -646,69 +668,26 @@ class PlannerAgent:
             "date": target_date,
             "calendar_events": calendar_events,
             "todos": todos,
-            "user_preferences": preferences,
+            "memory_context": memory_context,
             "weather": weather,
         }
         return (
-            f"{PLANNER_PROMPT}\n\n计划上下文：\n"
+            f"{PLANNER_PROMPT}\n\nPlanning context:\n"
             f"{json.dumps(context, ensure_ascii=False, indent=2, default=str)}"
-        )
-
-    @staticmethod
-    def _build_sdk_prompt(
-        *,
-        goal: str,
-        target_date: str,
-        location: str | None,
-        needs_weather: bool,
-    ) -> str:
-        weather_instruction = (
-            "因为这个目标和天气有关，请在生成计划前调用 weather 工具。"
-            if needs_weather and location
-            else "这个请求和天气有关，但没有提供 location，因此没有可用的 weather 工具。"
-            if needs_weather
-            else "这个请求不需要 weather 工具。"
-        )
-        return (
-            f"请为 {target_date} 创建每日计划。\n"
-            f"用户目标：{goal}\n"
-            f"地点：{location or '未提供'}\n"
-            "在生成计划前，请调用 calendar、todo 和 preference 工具。"
-            f"{weather_instruction}"
         )
 
     @staticmethod
     def _build_revision_prompt(conflicts: list[str]) -> str:
         return (
-            "请修改你上一次生成的 JSON 计划，移除以下确定性时间冲突 (conflicts)："
-            f"{json.dumps(conflicts, ensure_ascii=False)}。"
-            "只返回修正后的 JSON object，并使用完全相同的 schema。"
-        )
-
-    @staticmethod
-    def _build_sdk_revision_prompt(
-        *,
-        goal: str,
-        target_date: str,
-        previous_draft: PlanDraft | None,
-        conflicts: list[str],
-    ) -> str:
-        previous = previous_draft.model_dump(mode="json") if previous_draft else None
-        return (
-            f"请修正 {target_date} 的每日计划。\n"
-            f"用户目标：{goal}\n"
-            "上一版计划存在以下确定性时间冲突：\n"
-            f"{json.dumps(conflicts, ensure_ascii=False)}\n"
-            "上一版计划：\n"
-            f"{json.dumps(previous, ensure_ascii=False, indent=2)}\n"
-            "如有需要，请重新调用 calendar、todo 和 preference 工具，"
-            "然后返回一个没有时间重叠的结构化计划。"
+            "Revise the previous JSON plan to remove these deterministic "
+            f"conflicts: {json.dumps(conflicts, ensure_ascii=False)}. "
+            "Return only the corrected JSON object using the same schema."
         )
 
     @staticmethod
     def _parse_draft(raw_output: str) -> PlanDraft:
         if not isinstance(raw_output, str) or not raw_output.strip():
-            raise PlannerOutputError("Kimi 返回了空的计划结果")
+            raise PlannerOutputError("Kimi returned an empty plan")
 
         parsed: object | None = None
         decoder = json.JSONDecoder()
@@ -722,13 +701,13 @@ class PlannerAgent:
                 continue
 
         if parsed is None:
-            raise PlannerOutputError("Kimi 没有返回有效的 JSON object")
+            raise PlannerOutputError("Kimi did not return a valid JSON object")
 
         try:
             return PlanDraft.model_validate(parsed)
         except ValidationError as exc:
             raise PlannerOutputError(
-                f"Kimi 返回的每日计划结构无效：{exc}"
+                f"Kimi returned an invalid daily-plan structure: {exc}"
             ) from exc
 
     @staticmethod
@@ -737,23 +716,23 @@ class PlannerAgent:
         calendar_events: object,
     ) -> PlanValidation:
         if not isinstance(calendar_events, list):
-            raise PlannerToolError("calendar 工具必须返回 event list")
+            raise PlannerToolError("calendar tool must return an event list")
 
         schedule = [item.to_validator_item() for item in draft.schedule]
         for event in calendar_events:
             if not isinstance(event, dict):
-                raise PlannerToolError("calendar event 必须是 dictionary")
+                raise PlannerToolError("calendar events must be dictionaries")
             try:
                 schedule.append(
                     {
-                        "任务": str(event["title"]),
-                        "开始时间": str(event["start_time"]),
-                        "结束时间": str(event["end_time"]),
+                        "task": str(event["title"]),
+                        "start_time": str(event["start_time"]),
+                        "end_time": str(event["end_time"]),
                     }
                 )
             except KeyError as exc:
                 raise PlannerToolError(
-                    f"calendar event 缺少必要字段：{exc.args[0]}"
+                    f"calendar event is missing field: {exc.args[0]}"
                 ) from exc
 
         try:
@@ -763,8 +742,8 @@ class PlannerAgent:
                 f"calendar tool returned an invalid event: {exc}"
             ) from exc
         return PlanValidation(
-            is_valid=bool(result["是否有效"]),
-            conflicts=list(result["冲突"]),
+            is_valid=bool(result["is_valid"]),
+            conflicts=list(result["conflicts"]),
         )
 
 
@@ -772,8 +751,8 @@ def _normalise_date(value: str | date) -> str:
     if isinstance(value, date):
         return value.isoformat()
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("target_date 必须是非空 ISO 日期")
+        raise ValueError("target_date must be a non-blank ISO date")
     try:
         return date.fromisoformat(value.strip()).isoformat()
     except ValueError as exc:
-        raise ValueError("target_date 必须使用 YYYY-MM-DD 格式") from exc
+        raise ValueError("target_date must use YYYY-MM-DD format") from exc

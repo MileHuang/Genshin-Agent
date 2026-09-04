@@ -1,7 +1,7 @@
-"""用户对计划的反馈事件，以及 V1 的本地事件存储。
+"""User feedback events and the local V1 event store.
 
-EditEvent 只记录事实，不在这里推断用户偏好。后续的
-PreferenceAggregator 会读取这些事件来生成 BehaviorPreference。
+An EditEvent records facts only. PreferenceAggregator later reads the event
+stream to infer behavioral preferences.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from uuid import uuid4
 
 
 class EditAction(str, Enum):
-    """V1 支持的四类计划反馈。"""
+    """The four plan-feedback actions supported by V1."""
 
     ACCEPT = "ACCEPT"
     MOVE = "MOVE"
@@ -26,10 +26,10 @@ class EditAction(str, Enum):
 
 @dataclass(frozen=True)
 class EditEvent:
-    """一次用户对某个计划项的反馈。
+    """One user response to a plan item.
 
-    所有动作都必须保留原始时间，确保后续可以判断用户是否经常
-    调整或跳过同一类活动。只有 MOVE 可以带有新时间。
+    Every action preserves the original interval so later aggregation can
+    detect repeated moves or skips. Only MOVE may include a new interval.
     """
 
     action: EditAction | str
@@ -70,7 +70,7 @@ class EditEvent:
         )
 
         if self.original_start >= self.original_end:
-            raise ValueError("original_end 必须晚于 original_start")
+            raise ValueError("original_end must be later than original_start")
 
         if self.action is EditAction.MOVE:
             object.__setattr__(
@@ -80,17 +80,17 @@ class EditEvent:
                 self, "new_end", _require_datetime("new_end", self.new_end)
             )
             if self.new_start >= self.new_end:
-                raise ValueError("new_end 必须晚于 new_start")
+                raise ValueError("new_end must be later than new_start")
             if (
                 self.new_start == self.original_start
                 and self.new_end == self.original_end
             ):
-                raise ValueError("MOVE 事件必须改变时间段")
+                raise ValueError("a MOVE event must change the interval")
         elif self.new_start is not None or self.new_end is not None:
-            raise ValueError("只有 MOVE 事件可以包含 new_start 和 new_end")
+            raise ValueError("only MOVE events may include new_start and new_end")
 
     def to_dict(self) -> dict[str, Any]:
-        """转换成可以保存为 JSON 的字典。"""
+        """Convert the event to a JSON-compatible dictionary."""
 
         data = asdict(self)
         data["action"] = self.action.value
@@ -101,7 +101,7 @@ class EditEvent:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EditEvent":
-        """从 ``to_dict`` 产生的字典恢复事件。"""
+        """Restore an event from a dictionary produced by ``to_dict``."""
 
         parsed = dict(data)
         for name in ("original_start", "original_end", "new_start", "new_end", "timestamp"):
@@ -114,10 +114,10 @@ class EditEvent:
 
 
 class EditEventStore:
-    """追加式 JSON Lines 事件存储。
+    """Append-only JSON Lines event store.
 
-    V1 选用 JSONL，便于本地演示和调试；后续替换成数据库时，保持
-    ``append`` 与 ``list_events`` 接口即可。
+    JSONL keeps the local demo inspectable. A future database adapter can
+    preserve the same ``append`` and ``list_events`` interface.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -125,7 +125,7 @@ class EditEventStore:
 
     def append(self, event: EditEvent) -> None:
         if not isinstance(event, EditEvent):
-            raise TypeError("event 必须是 EditEvent")
+            raise TypeError("event must be an EditEvent")
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as stream:
@@ -138,7 +138,7 @@ class EditEventStore:
         activity_type: str | None = None,
         action: EditAction | str | None = None,
     ) -> list[EditEvent]:
-        """按可选条件读取事件，顺序与写入顺序一致。"""
+        """Read events in append order with optional filters."""
 
         if not self.path.exists():
             return []
@@ -151,7 +151,7 @@ class EditEventStore:
             try:
                 event = EditEvent.from_dict(json.loads(line))
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise ValueError(f"无法读取第 {line_number} 条 EditEvent") from exc
+                raise ValueError(f"Unable to read EditEvent on line {line_number}") from exc
 
             if user_id is not None and event.user_id != user_id:
                 continue
@@ -165,7 +165,7 @@ class EditEventStore:
 
 def _required_text(name: str, value: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} 不能为空")
+        raise ValueError(f"{name} must not be blank")
     return value.strip()
 
 
@@ -173,13 +173,13 @@ def _optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("reason 必须是字符串或 None")
+        raise ValueError("reason must be a string or None")
     return value.strip() or None
 
 
 def _require_datetime(name: str, value: datetime | None) -> datetime:
     if not isinstance(value, datetime):
-        raise ValueError(f"{name} 必须是 datetime")
+        raise ValueError(f"{name} must be a datetime")
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"{name} 必须包含时区")
+        raise ValueError(f"{name} must include a timezone")
     return value

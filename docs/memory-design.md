@@ -1,61 +1,107 @@
-# Phase 1 Memory Draft
+# Long-Term Memory Design
 
-The Phase 1 memory layer stores explainable evidence in a local append-only
-JSONL file without claiming that one edit is a stable habit. The store remains
-replaceable so production persistence can be added later.
+The current implementation is a local, explainable vertical slice. It uses an
+append-only JSONL event stream for behavioral evidence and a small JSON control
+overlay for user-managed profile and preference changes. Both stores sit behind
+a replaceable Memory Context interface so a durable SQLite service can replace
+them later.
 
-## Data flow
+## Memory layers
 
-```text
-User accepts, moves, deletes, or skips a plan item
-    -> EditEvent (raw evidence)
-    -> repeated similar evidence (minimum three matching events)
-    -> BehavioralPreference (candidate, confidence + evidence)
-    -> ProfileMemory (per-user snapshot)
-    -> future DailyPlan context (future integration)
-```
+| Layer | Contents | Creation | Planner role |
+| --- | --- | --- | --- |
+| Profile | Timezone, wake/sleep times, exercise habit, focus period | Explicit user input | Stable background and soft constraints |
+| Behavioral | Repeated accept, move, skip, or delete patterns | Aggregated after three matching events | Preferred times, avoided times, and deprioritization |
+| Episodic | Goal-relevant edit events | Selected from event history | Explainable recent context |
 
-## Contracts
-
-- `TimeSlot` validates one `HH:MM` interval.
-- `EditEvent` captures the user, plan item, action, timestamp, and relevant before/after slots. A move must contain two different slots.
-- `BehavioralPreference` captures one candidate or active preference, its scope, source event IDs, evidence count, confidence, and update time.
-- `ProfileMemory` holds a versioned set of uniquely identified preferences for one user.
-
-The durable contracts are in `memory/models.py`; the current runtime feedback
-pipeline is exposed through `tools/edit_event.py`, `tools/feedback_service.py`,
-and `tools/preference_aggregator.py`. Runtime events are immutable, require
-timezone-aware datetimes, and preserve their event IDs in every learned
-preference. Preference retrieval filters evidence by `user_id`.
-
-## Example evidence
-
-Moving exercise from 18:00-18:45 to 19:00-19:45 produces one `EditEvent`. Repeating a similar move on several days could later create a category-scoped preference such as:
+## Runtime data flow
 
 ```text
-key: preferred_exercise_period
-value: evening
-scope: category
-category: exercise
-evidence_count: 3
-confidence: 0.70
-status: candidate
+User feedback
+    -> FeedbackService
+    -> immutable EditEvent
+    -> append-only behavior_history.jsonl
+    -> PreferenceAggregator (minimum three matching events)
+    -> BehaviorPreference with confidence and evidence IDs
+    -> LocalMemoryContextService
+    -> get_memory_context(user_id, goal)
+    -> Planner prompt + deterministic memory rules
+    -> validated DailyPlan
 ```
 
-## Implemented locally
+## Shared contract
 
-- Append-only JSONL feedback evidence
-- Accept, move, skip, and delete events
-- Three-event preference threshold
-- Evidence IDs, counts, confidence, and timestamps
-- Per-user preference retrieval
-- Streamlit evidence progress and learned-preference display
+`get_memory_context(user_id, goal)` returns exactly three top-level fields:
 
-## Deliberately deferred
+```json
+{
+  "profile": {
+    "timezone": "local",
+    "wake_time": "08:00",
+    "sleep_time": "23:00",
+    "exercise_habit": "evening",
+    "focus_period": "morning"
+  },
+  "preferences": [
+    {
+      "memory_id": "stable-id",
+      "activity_type": "gym",
+      "attribute": "preferred_time_range",
+      "value": {"start": "20:00", "end": "21:00"},
+      "confidence": 0.76,
+      "evidence_count": 3,
+      "evidence_event_ids": ["event-1", "event-2", "event-3"],
+      "status": "active"
+    }
+  ],
+  "relevant_events": []
+}
+```
 
-- Production database persistence
-- More advanced contradictory-evidence and decay rules
-- User controls to correct or disable a learned preference
-- Preference decay, correction, and deletion
+The planner validates this shape before use. Paused preferences remain visible
+but are ignored by deterministic scheduling rules.
 
-Those behaviors need explicit product rules and tests. The current code only establishes stable, serializable contracts for that work.
+## Deterministic planner rules
+
+- `preferred_time_range`: move the matching activity into the preferred range
+  when the slot is free. If one flexible item occupies the range, swap it into
+  the original slot when that is safe.
+- `avoid_time_range`: move the activity to the nearest safe interval outside
+  the avoided range.
+- `deprioritize_activity`: lower the generated priority unless the current goal
+  explicitly requests the activity.
+- Fixed calendar events always win. A memory rule is skipped when it cannot be
+  applied without a conflict.
+
+Every applied rule adds an explanation to `DailyPlan.assumptions`.
+
+## User controls
+
+The Streamlit Memory page supports:
+
+- viewing and editing explicit profile values;
+- viewing learned preferences, confidence, evidence count, and stable IDs;
+- editing a structured preference value;
+- pausing or resuming a preference;
+- forgetting a learned preference;
+- inspecting recent feedback evidence.
+
+Profile edits and learned-memory controls are stored in
+`data/memory_controls.json`. Forgetting a derived preference adds a suppression
+marker; it does not rewrite the append-only raw event history.
+
+## Contracts and runtime models
+
+- `memory/models.py` contains strict Pydantic contract prototypes.
+- `tools/edit_event.py` and `tools/behavior_preference.py` contain the current
+  immutable runtime dataclasses.
+- `tools/memory_context.py` is the integration boundary that a future SQLite
+  implementation should preserve.
+
+## Deferred production work
+
+- SQLite migrations and durable service implementation
+- authentication and authorization for multi-user memory
+- retention, export, and raw-event deletion policy
+- contradictory-evidence handling and preference decay
+- audit history for profile and control changes

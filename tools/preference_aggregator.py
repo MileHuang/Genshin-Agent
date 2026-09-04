@@ -1,4 +1,4 @@
-"""将重复的 EditEvent 聚合为 BehaviorPreference。"""
+"""Aggregate repeated edit events into behavioral preferences."""
 
 from __future__ import annotations
 
@@ -10,26 +10,26 @@ from tools.edit_event import EditAction, EditEvent
 
 
 class PreferenceAggregator:
-    """V1 偏好聚合器。
+    """Conservative V1 preference aggregator.
 
-    为避免把一次临时调整误判为长期习惯，所有规则都需要达到
-    minimum_evidence 条事件才产生偏好。
+    Every rule requires ``minimum_evidence`` events so one temporary edit is
+    not treated as a long-term habit.
     """
 
     def __init__(self, minimum_evidence: int = 3) -> None:
         if not isinstance(minimum_evidence, int) or minimum_evidence < 1:
-            raise ValueError("minimum_evidence 必须是正整数")
+            raise ValueError("minimum_evidence must be a positive integer")
         self.minimum_evidence = minimum_evidence
 
     def aggregate(self, events: Iterable[EditEvent]) -> list[BehaviorPreference]:
-        """从事件流中产生正向时间、避开时间和活动优先级偏好。"""
+        """Produce preferred-time, avoid-time, and priority preferences."""
 
         positive_events: dict[tuple[str, str], list[EditEvent]] = defaultdict(list)
         skipped_events: dict[tuple[str, str], list[EditEvent]] = defaultdict(list)
         deleted_events: dict[tuple[str, str], list[EditEvent]] = defaultdict(list)
         for event in events:
             if not isinstance(event, EditEvent):
-                raise TypeError("events 中的每一项都必须是 EditEvent")
+                raise TypeError("every event must be an EditEvent")
             key = (event.user_id, event.activity_type)
             if event.action in {EditAction.MOVE, EditAction.ACCEPT}:
                 positive_events[key].append(event)
@@ -122,7 +122,7 @@ def _format_minutes(value: int) -> str:
 
 
 def _confidence(start_minutes: list[int], minimum_evidence: int) -> float:
-    """按证据数量和时间一致性生成保守的 V1 置信度。"""
+    """Calculate conservative confidence from count and time consistency."""
 
     average = sum(start_minutes) / len(start_minutes)
     mean_deviation = sum(abs(value - average) for value in start_minutes) / len(start_minutes)

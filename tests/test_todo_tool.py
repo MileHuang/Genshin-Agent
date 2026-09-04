@@ -13,10 +13,10 @@ def test_get_todos_returns_mock_items():
 
     assert isinstance(todos, list)
     assert len(todos) == 3
-    assert todos[0]["title"] == "学习 OpenAI Agents SDK"
-    assert todos[0]["priority"] == "高"
+    assert todos[0]["title"] == "Study the OpenAI Agents SDK"
+    assert todos[0]["priority"] == "high"
     assert todos[0]["estimated_minutes"] == 90
-    assert todos[0]["status"] == "待处理"
+    assert todos[0]["status"] == "pending"
 
 
 def test_todo_items_have_required_fields():
@@ -36,16 +36,16 @@ def test_todo_items_have_required_fields():
 
 def test_get_todos_returns_defensive_copy():
     todos = get_todos()
-    todos[0]["title"] = "被修改的任务"
+    todos[0]["title"] = "Modified task"
 
     fresh_todos = get_todos()
 
-    assert fresh_todos[0]["title"] == "学习 OpenAI Agents SDK"
+    assert fresh_todos[0]["title"] == "Study the OpenAI Agents SDK"
 
 
 def test_todo_tool_metadata_is_present():
     assert TOOL_NAME == "get_todos"
-    assert "待办事项" in TOOL_DESCRIPTION
+    assert "todo items" in TOOL_DESCRIPTION
 
 
 def test_todoist_provider_maps_active_tasks_and_follows_pages():
@@ -96,20 +96,20 @@ def test_todoist_provider_maps_active_tasks_and_follows_pages():
         {
             "id": "task-1",
             "title": "Finish report",
-            "priority": "高",
+            "priority": "high",
             "estimated_minutes": 45,
             "deadline": "2026-08-25T18:00:00+08:00",
             "category": "work",
-            "status": "待处理",
+            "status": "pending",
         },
         {
             "id": "task-2",
             "title": "Read article",
-            "priority": "低",
+            "priority": "low",
             "estimated_minutes": 0,
             "deadline": None,
             "category": "Todoist",
-            "status": "待处理",
+            "status": "pending",
         },
     ]
     assert len(requests) == 2

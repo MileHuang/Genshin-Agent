@@ -45,7 +45,7 @@ def test_edit_event_is_immutable_and_requires_timezone():
     with pytest.raises(FrozenInstanceError):
         event.reason = "changed later"
 
-    with pytest.raises(ValueError, match="时区"):
+    with pytest.raises(ValueError, match="timezone"):
         EditEvent(
             action="ACCEPT",
             activity_type="gym",
@@ -57,7 +57,7 @@ def test_edit_event_is_immutable_and_requires_timezone():
 
 @pytest.mark.parametrize("action", [EditAction.ACCEPT, EditAction.DELETE, EditAction.SKIP])
 def test_non_move_events_do_not_accept_new_times(action):
-    with pytest.raises(ValueError, match="只有 MOVE"):
+    with pytest.raises(ValueError, match="only MOVE"):
         EditEvent(
             action=action,
             activity_type="gym",
@@ -81,7 +81,7 @@ def test_move_event_requires_a_complete_valid_new_interval():
 
 
 def test_move_event_must_change_the_time_interval():
-    with pytest.raises(ValueError, match="必须改变时间段"):
+    with pytest.raises(ValueError, match="must change the interval"):
         EditEvent(
             action="MOVE",
             activity_type="gym",

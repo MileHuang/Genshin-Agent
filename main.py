@@ -15,7 +15,7 @@ from openai import AuthenticationError
 from planner_agents.planner_agent import PlannerAgent, PlannerConfigurationError
 from tools.edit_event import EditEventStore
 from tools.feedback_service import FeedbackService
-from tools.preference_tool import get_user_preferences
+from tools.memory_context import get_memory_context
 from tools.weather_tool import MockWeatherProvider, get_weather
 from tools.calendar_tool import GoogleCalendarProvider, get_calendar_events
 from tools.todo_tool import TodoistProvider, get_todos
@@ -70,6 +70,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="After generating a plan, interactively record accept, move, skip, or delete feedback.",
     )
+    parser.add_argument(
+        "--user-id",
+        default="default",
+        help="User whose profile and behavioral memory should be used.",
+    )
     return parser.parse_args()
 
 
@@ -109,6 +114,7 @@ async def run() -> None:
             args.goal,
             target_date=args.target_date,
             location=args.location,
+            user_id=args.user_id,
         )
     except PlannerConfigurationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
@@ -123,48 +129,58 @@ async def run() -> None:
         raise SystemExit(2) from None
     print(plan.model_dump_json(indent=2))
     if args.feedback:
-        _collect_feedback(plan, plan_id=f"daily-plan-{plan.date.isoformat()}")
+        _collect_feedback(
+            plan,
+            plan_id=f"daily-plan-{plan.date.isoformat()}",
+            user_id=args.user_id,
+        )
 
 
-def _collect_feedback(plan, *, plan_id: str) -> None:
-    """在终端收集用户对当前计划的反馈并追加到行为历史。"""
+def _collect_feedback(plan, *, plan_id: str, user_id: str = "default") -> None:
+    """Collect plan feedback in the terminal and append it to history."""
 
     feedback = FeedbackService(EditEventStore(BEHAVIOR_HISTORY_PATH))
     skipped_items = []
-    print("\n记录计划反馈（输入 q 结束）：")
+    print("\nRecord plan feedback (enter q to finish):")
 
     while True:
         for index, item in enumerate(plan.schedule, start=1):
             print(f"  {index}. {item.title} ({item.start_time}-{item.end_time})")
         if skipped_items:
-            print("\n今日已跳过：")
+            print("\nSkipped today:")
             for item in skipped_items:
                 print(f"  - {item.title} ({item.start_time}-{item.end_time})")
 
-        choice = input("选择日程序号，或输入 q 结束：").strip().lower()
+        choice = input("Select an item number, or enter q to finish: ").strip().lower()
         if choice in {"q", "quit", "exit"}:
             break
         try:
             item = plan.schedule[int(choice) - 1]
         except (ValueError, IndexError):
-            print("请输入列表中的日程序号，或 q。")
+            print("Enter a listed item number or q.")
             continue
 
-        action = input("操作（accept / move / skip / delete）：").strip().lower()
+        action = input("Action (accept / move / skip / delete): ").strip().lower()
         if action not in {"accept", "move", "skip", "delete"}:
-            print("操作无效，请输入 accept、move、skip 或 delete。")
+            print("Invalid action. Enter accept, move, skip, or delete.")
             continue
 
         new_start = new_end = None
         if action == "move":
-            new_range = input("新时间（例如 21-22 或 21:00-22:00）：").strip()
+            new_range = input("New time (for example 21-22 or 21:00-22:00): ").strip()
             try:
                 new_start, new_end = _parse_time_range(plan.date, new_range)
             except ValueError:
-                print("时间格式无效，例如：21-22 或 21:00-22:00。")
+                print("Invalid time format. Use 21-22 or 21:00-22:00.")
                 continue
 
-            moves = _resolve_move(plan, item, new_start, new_end)
+            moves = _resolve_move(
+                plan,
+                item,
+                new_start,
+                new_end,
+                user_id=user_id,
+            )
             if moves is None:
                 continue
             for moved_item, moved_start, moved_end in moves:
@@ -179,10 +195,11 @@ def _collect_feedback(plan, *, plan_id: str) -> None:
                     new_start=moved_start,
                     new_end=moved_end,
                     source_plan_id=plan_id,
+                    user_id=user_id,
                 )
                 moved_item.start_time = moved_start.strftime("%H:%M")
                 moved_item.end_time = moved_end.strftime("%H:%M")
-                print(f"已记录 {event.action.value}：{moved_item.title}。")
+                print(f"Recorded {event.action.value} for {moved_item.title}.")
             plan.schedule.sort(key=lambda schedule_item: schedule_item.start_time)
             continue
 
@@ -192,6 +209,7 @@ def _collect_feedback(plan, *, plan_id: str) -> None:
             "original_start": original_start,
             "original_end": original_end,
             "source_plan_id": plan_id,
+            "user_id": user_id,
         }
         if action == "accept":
             event = feedback.accept(**fields)
@@ -202,41 +220,48 @@ def _collect_feedback(plan, *, plan_id: str) -> None:
         else:
             event = feedback.delete(**fields)
             plan.schedule.remove(item)
-        print(f"已记录 {event.action.value}：{item.title}。")
+        print(f"Recorded {event.action.value} for {item.title}.")
 
-    print(f"反馈已保存到：{BEHAVIOR_HISTORY_PATH}")
+    print(f"Feedback saved to: {BEHAVIOR_HISTORY_PATH}")
 
 
 def _parse_time_range(plan_date: date, value: str) -> tuple[datetime, datetime]:
-    """把 ``21-22`` 或 ``21:00-22:00`` 转为当天的两个 datetime。"""
+    """Convert ``21-22`` or ``21:00-22:00`` to two datetimes."""
 
     parts = value.split("-", maxsplit=1)
     if len(parts) != 2:
-        raise ValueError("时间范围必须包含 -")
+        raise ValueError("time range must contain -")
     try:
         start = datetime.combine(plan_date, _parse_clock_time(parts[0])).astimezone()
         end = datetime.combine(plan_date, _parse_clock_time(parts[1])).astimezone()
     except ValueError as exc:
-        raise ValueError("时间必须使用 H 或 HH:MM 格式") from exc
+        raise ValueError("time values must use H or HH:MM format") from exc
     if start >= end:
-        raise ValueError("结束时间必须晚于开始时间")
+        raise ValueError("end time must be later than start time")
     return start, end
 
 
 def _parse_clock_time(value: str):
-    """接受整点简写（9、21）或标准时间（09:00、21:30）。"""
+    """Accept whole-hour shorthand or standard HH:MM values."""
 
     clean_value = value.strip()
     if clean_value.isdigit():
         hour = int(clean_value)
         if 0 <= hour <= 23:
             return datetime.strptime(f"{hour:02d}:00", "%H:%M").time()
-        raise ValueError("小时必须在 0 到 23 之间")
+        raise ValueError("hour must be between 0 and 23")
     return datetime.strptime(clean_value, "%H:%M").time()
 
 
-def _resolve_move(plan, selected_item, new_start: datetime, new_end: datetime):
-    """返回安全的移动方案；有冲突时给出偏好驱动的建议并等待确认。"""
+def _resolve_move(
+    plan,
+    selected_item,
+    new_start: datetime,
+    new_end: datetime,
+    *,
+    user_id: str = "default",
+):
+    """Return a safe move or ask for preference-guided conflict resolution."""
 
     conflicts = _find_conflicts(
         plan,
@@ -247,12 +272,15 @@ def _resolve_move(plan, selected_item, new_start: datetime, new_end: datetime):
     if not conflicts:
         return [(selected_item, new_start, new_end)]
     if len(conflicts) > 1:
-        names = "、".join(item.title for item in conflicts)
-        print(f"新时间与多项日程冲突：{names}。请换一个时间，或逐项调整这些日程。")
+        names = ", ".join(item.title for item in conflicts)
+        print(
+            f"The new time conflicts with multiple items: {names}. "
+            "Choose another time or adjust those items individually."
+        )
         return None
 
     conflicting_item = conflicts[0]
-    learned_preferences = get_user_preferences()["学习到的偏好"]
+    learned_preferences = get_memory_context(user_id, "")["preferences"]
     selected_score = _preference_score(selected_item, new_start, new_end, learned_preferences)
     conflict_start, conflict_end = _parse_time_range(
         plan.date,
@@ -268,32 +296,41 @@ def _resolve_move(plan, selected_item, new_start: datetime, new_end: datetime):
     if selected_score >= conflicting_score:
         item_to_move = conflicting_item
         print(
-            f"时间冲突：{selected_item.title} 与 {conflicting_item.title} 重叠。"
-            f"根据当前偏好，建议保留 {selected_item.title} 在新时间，移动 {conflicting_item.title}。"
+            f"Conflict: {selected_item.title} overlaps {conflicting_item.title}. "
+            f"Memory suggests keeping {selected_item.title} at the new time "
+            f"and moving {conflicting_item.title}."
         )
     else:
         item_to_move = selected_item
         print(
-            f"时间冲突：{selected_item.title} 与 {conflicting_item.title} 重叠。"
-            f"根据当前偏好，建议保留 {conflicting_item.title} 在当前时间，移动 {selected_item.title}。"
+            f"Conflict: {selected_item.title} overlaps {conflicting_item.title}. "
+            f"Memory suggests keeping {conflicting_item.title} at its current "
+            f"time and moving {selected_item.title}."
         )
 
-    confirm = input(f"确认移动 {item_to_move.title} 吗？(y/n)：").strip().lower()
-    if confirm not in {"y", "yes", "是"}:
-        print("已取消本次移动。")
+    confirm = input(f"Move {item_to_move.title}? (y/n): ").strip().lower()
+    if confirm not in {"y", "yes"}:
+        print("Move cancelled.")
         return None
 
     replacement_range = input(
-        f"请输入 {item_to_move.title} 的新时间（例如 21-22 或 21:00-22:00）："
+        f"Enter a new time for {item_to_move.title} "
+        "(for example 21-22 or 21:00-22:00): "
     ).strip()
     try:
         replacement_start, replacement_end = _parse_time_range(plan.date, replacement_range)
     except ValueError:
-        print("时间格式无效，已取消本次移动。")
+        print("Invalid time format. Move cancelled.")
         return None
 
     if item_to_move is selected_item:
-        return _resolve_move(plan, selected_item, replacement_start, replacement_end)
+        return _resolve_move(
+            plan,
+            selected_item,
+            replacement_start,
+            replacement_end,
+            user_id=user_id,
+        )
 
     remaining_conflicts = _find_conflicts(
         plan,
@@ -304,8 +341,11 @@ def _resolve_move(plan, selected_item, new_start: datetime, new_end: datetime):
     if _intervals_overlap(new_start, new_end, replacement_start, replacement_end):
         remaining_conflicts.append(selected_item)
     if remaining_conflicts:
-        names = "、".join(item.title for item in remaining_conflicts)
-        print(f"{conflicting_item.title} 的新时间仍与 {names} 冲突，已取消本次移动。")
+        names = ", ".join(item.title for item in remaining_conflicts)
+        print(
+            f"The new time for {conflicting_item.title} still conflicts with "
+            f"{names}. Move cancelled."
+        )
         return None
     return [
         (selected_item, new_start, new_end),
@@ -334,7 +374,7 @@ def _intervals_overlap(
 
 
 def _preference_score(item, start: datetime, end: datetime, learned_preferences: list[dict]) -> float:
-    """计算活动在给定时间段符合学习偏好的程度。"""
+    """Score how well an activity interval matches learned preferences."""
 
     activity_type = _activity_type(item.title)
     best_score = 0.0
@@ -356,7 +396,7 @@ def _preference_score(item, start: datetime, end: datetime, learned_preferences:
 
 
 def _activity_type(title: str) -> str:
-    """为自由文本日程标题生成稳定、可聚合的活动类型。"""
+    """Create a stable activity type from a free-text title."""
 
     normalised = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
     return normalised or "other"

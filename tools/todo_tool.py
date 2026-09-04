@@ -13,10 +13,13 @@ from config.settings import TODOIST_API_BASE_URL, TODOIST_API_TOKEN, TODOIST_TIM
 
 
 TOOL_NAME = "get_todos"
-TOOL_DESCRIPTION = "返回待办事项，包括优先级、预计耗时、截止时间、分类和状态。"
+TOOL_DESCRIPTION = (
+    "Return todo items with priority, estimated duration, deadline, category, "
+    "and status."
+)
 
-TodoPriority = Literal["低", "中", "高"]
-TodoStatus = Literal["待处理", "进行中", "已完成", "已跳过"]
+TodoPriority = Literal["low", "medium", "high"]
+TodoStatus = Literal["pending", "in_progress", "completed", "skipped"]
 
 
 class TodoItem(TypedDict):
@@ -44,30 +47,30 @@ class TodoistAPIError(RuntimeError):
 DEFAULT_MOCK_TODOS: tuple[TodoItem, ...] = (
     {
         "id": "todo-001",
-        "title": "学习 OpenAI Agents SDK",
-        "priority": "高",
+        "title": "Study the OpenAI Agents SDK",
+        "priority": "high",
         "estimated_minutes": 90,
         "deadline": "18:00",
-        "category": "学习",
-        "status": "待处理",
+        "category": "study",
+        "status": "pending",
     },
     {
         "id": "todo-002",
-        "title": "户外跑步",
-        "priority": "中",
+        "title": "Outdoor run",
+        "priority": "medium",
         "estimated_minutes": 45,
         "deadline": None,
-        "category": "健康",
-        "status": "待处理",
+        "category": "health",
+        "status": "pending",
     },
     {
         "id": "todo-003",
-        "title": "买菜",
-        "priority": "中",
+        "title": "Buy groceries",
+        "priority": "medium",
         "estimated_minutes": 40,
         "deadline": "19:30",
-        "category": "生活",
-        "status": "待处理",
+        "category": "errand",
+        "status": "pending",
     },
 )
 
@@ -171,16 +174,16 @@ def _to_todo_item(task: object) -> TodoItem:
         "estimated_minutes": _duration_minutes(task.get("duration")),
         "deadline": _deadline(task.get("deadline") or task.get("due")),
         "category": category,
-        "status": "待处理",
+        "status": "pending",
     }
 
 
 def _to_priority(value: object) -> TodoPriority:
     if value in (4, 3):
-        return "高"
+        return "high"
     if value == 2:
-        return "中"
-    return "低"
+        return "medium"
+    return "low"
 
 
 def _duration_minutes(value: object) -> int:
@@ -207,8 +210,8 @@ def _select_planning_tasks(todos: list[TodoItem], *, limit: int) -> list[TodoIte
 
     def rank(todo: TodoItem) -> tuple[int, int, str]:
         deadline = todo["deadline"] or "9999-12-31"
-        urgent = 0 if deadline[:10] <= today or todo["priority"] == "高" else 1
-        priority = {"高": 0, "中": 1, "低": 2}[todo["priority"]]
+        urgent = 0 if deadline[:10] <= today or todo["priority"] == "high" else 1
+        priority = {"high": 0, "medium": 1, "low": 2}[todo["priority"]]
         return urgent, priority, deadline
 
     return sorted(todos, key=rank)[:limit]

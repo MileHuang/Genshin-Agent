@@ -57,12 +57,12 @@ def test_daily_planner_pipeline_produces_conflict_free_structured_plan():
 def test_pipeline_validator_detects_plan_calendar_overlap():
     events = get_calendar_events("2026-08-07")
     combined_schedule = [
-        {"任务": "Overlapping task", "开始时间": "10:15", "结束时间": "11:00"},
+        {"task": "Overlapping task", "start_time": "10:15", "end_time": "11:00"},
         *[
             {
-                "任务": event["title"],
-                "开始时间": event["start_time"],
-                "结束时间": event["end_time"],
+                "task": event["title"],
+                "start_time": event["start_time"],
+                "end_time": event["end_time"],
             }
             for event in events
         ],
@@ -70,5 +70,5 @@ def test_pipeline_validator_detects_plan_calendar_overlap():
 
     result = validate_schedule(combined_schedule)
 
-    assert result["是否有效"] is False
-    assert any("Team check-in" in conflict for conflict in result["冲突"])
+    assert result["is_valid"] is False
+    assert any("Team check-in" in conflict for conflict in result["conflicts"])

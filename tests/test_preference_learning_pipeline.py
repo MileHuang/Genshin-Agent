@@ -5,11 +5,11 @@ from datetime import datetime, timezone
 from planner_agents.planner_agent import PlannerAgent
 from tools.edit_event import EditEventStore
 from tools.feedback_service import FeedbackService
-from tools.preference_tool import get_user_preferences
+from tools.memory_context import LocalMemoryContextService, MemoryControlStore
 
 
 class CapturingTextAgent:
-    """离线 Planner 替身：记录它收到的上下文。"""
+    """Offline planner double that records the supplied context."""
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
@@ -22,8 +22,8 @@ class CapturingTextAgent:
                 "schedule": [
                     {
                         "title": "Gym",
-                        "start_time": "20:00",
-                        "end_time": "21:00",
+                        "start_time": "18:00",
+                        "end_time": "19:00",
                         "priority": "medium",
                         "category": "health",
                         "notes": "Use learned preference.",
@@ -54,19 +54,29 @@ def test_feedback_to_preference_to_planner_prompt_pipeline(tmp_path):
         )
 
     text_agent = CapturingTextAgent()
+    memory_service = LocalMemoryContextService(
+        event_store=store,
+        control_store=MemoryControlStore(tmp_path / "memory_controls.json"),
+    )
     planner = PlannerAgent(
         text_agent,
         calendar_getter=lambda _: [],
         todo_getter=lambda: [],
-        preference_getter=lambda: get_user_preferences(
-            user_id="mike", event_store=store
-        ),
+        memory_getter=memory_service.get_memory_context,
     )
 
-    plan = asyncio.run(planner.create_daily_plan("Plan a gym session", target_date="2026-08-18"))
+    plan = asyncio.run(
+        planner.create_daily_plan(
+            "Plan a gym session",
+            target_date="2026-08-18",
+            user_id="mike",
+        )
+    )
 
     assert plan.validation.is_valid is True
     assert plan.schedule[0].start_time == "20:00"
+    assert plan.memory_preferences_considered == 1
+    assert any("Applied memory" in item for item in plan.assumptions)
     assert len(text_agent.prompts) == 1
     assert '"activity_type": "gym"' in text_agent.prompts[0]
     assert '"attribute": "preferred_time_range"' in text_agent.prompts[0]

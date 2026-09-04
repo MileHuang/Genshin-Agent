@@ -8,7 +8,7 @@ description: Develop and review this repository's Phase 1 Daily Planner MVP. Use
 Keep development focused on one demonstrable vertical slice:
 
 ```text
-Goal + Calendar + Todo + Preferences + Weather
+Goal + Calendar + Todo + Memory + Weather
     -> PlannerAgent
     -> conflict-validated DailyPlan
     -> user review/edit
@@ -17,9 +17,9 @@ Goal + Calendar + Todo + Preferences + Weather
 
 ## Protect the Phase 1 boundary
 
-- Build only the daily-planning loop, required input adapters, deterministic validation, a minimal demo, and edit-evidence contracts.
-- Do not add Travel, Health, vector databases, LangGraph, multi-agent orchestration, PostgreSQL, Redis, or real Google Calendar integration.
-- Keep calendar writes and durable memory persistence out of this phase. Produce drafts and data contracts only.
+- Build only the daily-planning and explainable-memory loop, its required input adapters, deterministic validation, and demo surfaces.
+- Do not add Travel, Health, vector databases, LangGraph, multi-agent orchestration, PostgreSQL, Redis, or a new production persistence layer unless the user explicitly changes scope.
+- Preserve explicit confirmation before existing Google Calendar writes and keep local tests independent of external services.
 - If a request crosses this boundary, isolate the smallest Phase 1-compatible part and call out the deferred work.
 
 ## Work safely in the repository
@@ -36,7 +36,7 @@ Goal + Calendar + Todo + Preferences + Weather
 - Provide deterministic mock behavior so tests never require network access.
 - Add a matching `tests/test_<tool>.py` file, including validation and fresh-copy/isolation behavior where relevant.
 - Register the tool with `PlannerAgent` only after its standalone contract is tested.
-- Add the canonical tool label to `DailyPlan.tools_used` when the planner actually uses it. Use `calendar`, `todo`, `preferences`, or `weather` for the Phase 1 inputs.
+- Add the canonical context label to `DailyPlan.tools_used` when the planner actually uses it. Use `calendar`, `todo`, `memory`, or `weather` for the Phase 1 inputs.
 - Ensure tool output is represented in the context used to create `DailyPlan`; do not collect unused context.
 - Update the README tool list and project tree in the same change.
 
@@ -48,14 +48,16 @@ Goal + Calendar + Todo + Preferences + Weather
 - Keep offline tests independent of Moonshot, OpenAI, and Open-Meteo availability.
 - Reject malformed dates, times, empty required text, and inconsistent edit evidence at the model or tool boundary.
 
-## Extend the memory draft
+## Extend memory and planner integration
 
 - Treat `EditEvent` as immutable evidence of accepting, moving, deleting, or skipping a plan item.
 - Record both original and new time slots for a move.
 - Aggregate repeated evidence into `BehavioralPreference`; retain evidence IDs, evidence count, confidence, and last-updated time.
-- Store learned preferences in `ProfileMemory` for later planner use.
+- Preserve the shared `get_memory_context(user_id, goal)` response with `profile`, `preferences`, and `relevant_events`.
+- Keep fixed calendar events as hard constraints and memory preferences as explainable soft constraints.
+- Ignore paused preferences and ensure user-forgotten preferences do not affect later plans.
 - Do not promote a long-term preference from a single edit. Preference inference and persistence remain follow-up work.
-- Keep memory code independent from `PlannerAgent` until an explicit integration task owns both the learning rule and its tests.
+- Keep the local JSONL/control-file backend replaceable by depending on the Memory Context interface rather than storage details.
 
 ## Finish a task
 

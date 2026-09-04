@@ -160,7 +160,7 @@ class GoogleCalendarProvider:
                     },
                 ).execute()
             except Exception as exc:
-                raise CalendarOperationError("无法创建 Google Calendar 日程") from exc
+                raise CalendarOperationError("unable to create Google Calendar events") from exc
             created_ids.append(str(event["id"]))
         return created_ids
 
@@ -191,7 +191,7 @@ class GoogleCalendarProvider:
         except CalendarConfigurationError:
             raise
         except Exception as exc:
-            raise CalendarOperationError("无法更新 Google Calendar 日程") from exc
+            raise CalendarOperationError("unable to update the Google Calendar event") from exc
 
     def delete_event(self, event_id: str) -> None:
         """Delete one previously created Personal Planner event."""
@@ -207,7 +207,7 @@ class GoogleCalendarProvider:
         except CalendarConfigurationError:
             raise
         except Exception as exc:
-            raise CalendarOperationError("无法删除 Google Calendar 日程") from exc
+            raise CalendarOperationError("unable to delete the Google Calendar event") from exc
 
     def _get_service(self) -> Any:
         _enable_local_vendor_packages()

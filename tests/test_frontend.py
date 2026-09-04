@@ -5,6 +5,7 @@ from frontend import (
     calendar_sync_key,
     generate_plan,
     get_learning_summary,
+    parse_preference_value,
     schedule_rows,
 )
 from tools.edit_event import EditAction, EditEventStore
@@ -34,9 +35,9 @@ def test_demo_frontend_generates_valid_display_rows():
     rows = schedule_rows(plan)
 
     assert plan.validation.is_valid is True
-    assert rows[0]["时间"] == "08:30 – 10:00"
-    assert rows[0]["事项"] == "Focused study session"
-    assert plan.tools_used == ["calendar", "todo", "preferences", "weather"]
+    assert rows[0]["Time"] == "08:30 - 10:00"
+    assert rows[0]["Item"] == "Focused study session"
+    assert plan.tools_used == ["calendar", "todo", "memory", "weather"]
 
 
 def test_calendar_sync_key_changes_when_plan_schedule_changes():
@@ -70,7 +71,7 @@ def test_frontend_feedback_persists_skip_and_removes_schedule_item(tmp_path):
     )
 
     events = service.event_store.list_events()
-    assert message.startswith("已记录 SKIP")
+    assert message.startswith("Recorded SKIP")
     assert len(plan.schedule) == 5
     assert events[0].action is EditAction.SKIP
     assert events[0].activity_type == "focused_study_session"
@@ -129,7 +130,7 @@ def test_frontend_feedback_rejects_conflicting_move(tmp_path):
             new_end=time(13, 30),
         )
     except ValueError as exc:
-        assert "冲突" in str(exc)
+        assert "conflicts" in str(exc)
     else:
         raise AssertionError("Expected a schedule conflict")
 
@@ -159,3 +160,10 @@ def test_learning_summary_forms_preference_after_three_matching_events(tmp_path)
     assert summary["evidence"][("focused_study_session", "ACCEPT")] == 3
     assert len(summary["preferences"]) == 1
     assert summary["preferences"][0]["attribute"] == "preferred_time_range"
+
+
+def test_preference_value_editor_accepts_structured_json():
+    assert parse_preference_value('{"start": "20:00", "end": "21:00"}') == {
+        "start": "20:00",
+        "end": "21:00",
+    }

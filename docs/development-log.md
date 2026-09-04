@@ -1,6 +1,27 @@
 # Development Log
 
-## 2026-08-25 — Real Calendar and Todo Integration
+## 2026-09-03 - Member B Memory and Planner Integration
+
+### Delivered
+
+- Added the shared `get_memory_context(user_id, goal)` contract.
+- Added a local adapter that returns profile, evidence-backed preferences, and
+  goal-relevant events.
+- Added deterministic preferred-time, avoid-time, and deprioritization rules.
+- Added Planner user isolation and explainable memory-rule application.
+- Added a Streamlit Memory page for profile editing and learned-memory
+  inspection, editing, pause/resume, and forget actions.
+- Added an end-to-end test proving that three gym moves affect the next plan.
+- Migrated source code, UI text, error messages, mock data, tests, and project
+  documentation to English.
+
+### Current persistence boundary
+
+- Behavioral evidence remains in append-only local JSONL.
+- User-authored memory controls use a replaceable local JSON overlay.
+- SQLite persistence remains a separate backend task.
+
+## 2026-08-25 - Real Calendar and Todo Integration
 
 ### Delivered
 

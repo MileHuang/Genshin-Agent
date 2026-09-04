@@ -100,7 +100,7 @@ def test_planner_routes_calendar_preferences_and_weather():
     )
 
     assert result.validation.is_valid is True
-    assert result.tools_used == ["calendar", "todo", "preferences", "weather"]
+    assert result.tools_used == ["calendar", "todo", "memory", "weather"]
     assert result.todo_items_considered == 3
     assert result.calendar_events_considered == 1
     assert result.weather["condition"] == "Clear"
@@ -126,11 +126,11 @@ def test_sdk_planner_prefetches_context_before_model_generation(monkeypatch):
             {
                 "id": "todo-1",
                 "title": "Prepare slides",
-                "priority": "高",
+                "priority": "high",
                 "estimated_minutes": 60,
                 "deadline": None,
                 "category": "work",
-                "status": "待处理",
+                "status": "pending",
             }
         ]
 
@@ -163,7 +163,7 @@ def test_sdk_planner_prefetches_context_before_model_generation(monkeypatch):
     assert calendar_calls == ["2026-08-07"]
     assert todo_calls == ["called"]
     assert preference_calls == ["called"]
-    assert result.tools_used == ["calendar", "todo", "preferences"]
+    assert result.tools_used == ["calendar", "todo", "memory"]
     assert result.calendar_events_considered == 1
     assert result.todo_items_considered == 1
     assert "Fixed meeting" in prompts[0]
@@ -191,7 +191,7 @@ def test_planner_skips_weather_for_indoor_goal():
         )
     )
 
-    assert result.tools_used == ["calendar", "todo", "preferences"]
+    assert result.tools_used == ["calendar", "todo", "memory"]
     assert result.todo_items_considered == 3
     assert result.weather is None
 
@@ -343,3 +343,41 @@ def test_planner_rejects_blank_goal_before_using_tools():
 
     with pytest.raises(ValueError, match="goal must not be blank"):
         asyncio.run(planner.create_daily_plan("   "))
+
+
+def test_agents_sdk_path_accepts_text_before_valid_json(monkeypatch):
+    import agents
+
+    class FakeResult:
+        final_output = f"I'll prepare that.\n{plan_json(('Work', '09:00', '10:00'))}"
+
+    class FakeRunner:
+        @staticmethod
+        async def run(_: object, __: str) -> FakeResult:
+            return FakeResult()
+
+    monkeypatch.setattr(agents, "Runner", FakeRunner)
+    planner = PlannerAgent()
+
+    draft = asyncio.run(
+        planner._generate_draft_with_sdk(object(), "Create a plan")
+    )
+
+    assert draft.summary == "A balanced plan"
+    assert draft.schedule[0].title == "Work"
+
+
+def test_kimi_sdk_agent_uses_text_output_for_compatible_json_parsing():
+    planner = PlannerAgent(
+        sdk_model="test-model",
+        calendar_getter=lambda _: [],
+        preference_getter=lambda: {},
+    )
+
+    sdk_agent, _, _ = planner._build_sdk_agent(
+        "Plan focused work",
+        plan_date="2026-08-07",
+        location=None,
+    )
+
+    assert sdk_agent.output_type is None
