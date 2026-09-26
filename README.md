@@ -131,6 +131,8 @@ designed so a future SQLite service can replace these local files without
 changing Planner or UI contracts.
 
 See [Long-Term Memory Design](docs/memory-design.md) for details.
+See the [Next-Phase Agent Roadmap](docs/next-phase-roadmap.md) for the planned
+tool platform, reusable skills, public Travel RAG, and Travel Agent work.
 
 ## Repository structure
 
