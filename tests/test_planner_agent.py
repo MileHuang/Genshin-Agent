@@ -110,11 +110,13 @@ def test_planner_routes_calendar_preferences_and_weather():
     assert "focus_time" in fake_agent.prompts[0]
 
 
-def test_sdk_planner_prefetches_context_before_model_generation(monkeypatch):
+def test_sdk_planner_react_calls_agent_tools_before_model_generation(monkeypatch):
+    import agents
+    from agents.tool_context import ToolContext
+
     calendar_calls: list[str] = []
     todo_calls: list[str] = []
     preference_calls: list[str] = []
-    prompts: list[str] = []
 
     def calendar_getter(target_date: str) -> list[dict]:
         calendar_calls.append(target_date)
@@ -139,22 +141,33 @@ def test_sdk_planner_prefetches_context_before_model_generation(monkeypatch):
         return {"focus_time": "morning"}
 
     planner = PlannerAgent(
-        sdk_model=object(),
+        sdk_model="test-model",
         calendar_getter=calendar_getter,
         todo_getter=todo_getter,
         preference_getter=preference_getter,
     )
-    monkeypatch.setattr(
-        planner,
-        "_build_sdk_agent",
-        lambda *args, **kwargs: (object(), {}, []),
-    )
+    class FakeResult:
+        final_output = plan_json(("Prepare slides", "09:00", "10:00"))
 
-    async def generate(_agent, prompt: str) -> PlanDraft:
-        prompts.append(prompt)
-        return PlanDraft.model_validate(json.loads(plan_json(("Prepare slides", "09:00", "10:00"))))
+    class FakeRunner:
+        @staticmethod
+        async def run(agent, prompt: str, *, max_turns: int) -> FakeResult:
+            assert max_turns == 6
+            assert "read-only tools" in prompt
+            for tool_name in ("read_calendar", "read_todos", "read_memory"):
+                tool = next(tool for tool in agent.tools if tool.name == tool_name)
+                await tool.on_invoke_tool(
+                    ToolContext(
+                        context=None,
+                        tool_name=tool_name,
+                        tool_call_id=f"{tool_name}-call",
+                        tool_arguments="{}",
+                    ),
+                    "{}",
+                )
+            return FakeResult()
 
-    monkeypatch.setattr(planner, "_generate_draft_with_sdk", generate)
+    monkeypatch.setattr(agents, "Runner", FakeRunner)
 
     result = asyncio.run(
         planner.create_daily_plan("Prepare presentation", target_date="2026-08-07")
@@ -166,9 +179,6 @@ def test_sdk_planner_prefetches_context_before_model_generation(monkeypatch):
     assert result.tools_used == ["calendar", "todo", "memory"]
     assert result.calendar_events_considered == 1
     assert result.todo_items_considered == 1
-    assert "Fixed meeting" in prompts[0]
-    assert "Prepare slides" in prompts[0]
-    assert "focus_time" in prompts[0]
 
 
 def test_planner_skips_weather_for_indoor_goal():
@@ -353,7 +363,8 @@ def test_agents_sdk_path_accepts_text_before_valid_json(monkeypatch):
 
     class FakeRunner:
         @staticmethod
-        async def run(_: object, __: str) -> FakeResult:
+        async def run(_: object, __: str, *, max_turns: int) -> FakeResult:
+            assert max_turns == 6
             return FakeResult()
 
     monkeypatch.setattr(agents, "Runner", FakeRunner)
@@ -365,6 +376,58 @@ def test_agents_sdk_path_accepts_text_before_valid_json(monkeypatch):
 
     assert draft.summary == "A balanced plan"
     assert draft.schedule[0].title == "Work"
+
+
+def test_sdk_react_path_uses_sdk_function_tools(monkeypatch):
+    import agents
+    from agents.tool_context import ToolContext
+
+    class FakeResult:
+        final_output = plan_json(("Write report", "09:00", "10:00"))
+
+    class FakeRunner:
+        @staticmethod
+        async def run(agent, _: str, *, max_turns: int) -> FakeResult:
+            assert max_turns == 6
+            tools = {tool.name: tool for tool in agent.tools}
+            await tools["read_calendar"].on_invoke_tool(
+                ToolContext(
+                    context=None,
+                    tool_name="read_calendar",
+                    tool_call_id="calendar-call",
+                    tool_arguments="{}",
+                ),
+                "{}",
+            )
+            await tools["read_memory"].on_invoke_tool(
+                ToolContext(
+                    context=None,
+                    tool_name="read_memory",
+                    tool_call_id="memory-call",
+                    tool_arguments="{}",
+                ),
+                "{}",
+            )
+            return FakeResult()
+
+    monkeypatch.setattr(agents, "Runner", FakeRunner)
+    planner = PlannerAgent(
+        sdk_model="test-model",
+        calendar_getter=lambda _: [],
+        todo_getter=lambda: [{"content": "Optional task"}],
+        memory_getter=lambda _user_id, _goal: {
+            "profile": {},
+            "preferences": [],
+            "relevant_events": [],
+        },
+    )
+
+    plan = asyncio.run(
+        planner.create_daily_plan("Write a report", target_date="2026-08-07")
+    )
+
+    assert plan.tools_used == ["calendar", "memory"]
+    assert plan.todo_items_considered == 0
 
 
 def test_kimi_sdk_agent_uses_text_output_for_compatible_json_parsing():

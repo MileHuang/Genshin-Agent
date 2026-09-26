@@ -12,7 +12,8 @@ them later.
 | --- | --- | --- | --- |
 | Profile | Timezone, wake/sleep times, exercise habit, focus period | Explicit user input | Stable background and soft constraints |
 | Behavioral | Repeated accept, move, skip, or delete patterns | Aggregated after three matching events | Preferred times, avoided times, and deprioritization |
-| Episodic | Goal-relevant edit events | Selected from event history | Explainable recent context |
+| Episodic | Goal-relevant edit events and LLM-consolidated summaries | Source-linked feedback; summaries only on explicit user action | Explainable long-term context |
+| Session | Current goal, temporary constraints, timezone | Session start | Short-term Markdown context; never indexed |
 
 ## Runtime data flow
 
@@ -23,6 +24,8 @@ User feedback
     -> append-only behavior_history.jsonl
     -> PreferenceAggregator (minimum three matching events)
     -> BehaviorPreference with confidence and evidence IDs
+    -> explicit Kimi consolidation (two or more new events)
+    -> source-linked episodic RAG summary
     -> LocalMemoryContextService
     -> get_memory_context(user_id, goal)
     -> Planner prompt + deterministic memory rules
@@ -60,6 +63,18 @@ User feedback
 
 The planner validates this shape before use. Paused preferences remain visible
 but are ignored by deterministic scheduling rules.
+
+## LLM consolidation guardrails
+
+Kimi is not called during normal retrieval. The user explicitly generates a
+Memory-page preview, which sends only pending feedback events for that user.
+They can edit, approve, or discard the proposed summary. Only approval stores
+an episodic document with every original event ID as a source link. It is never
+promoted to a `BehaviorPreference` or a hard rule; only the existing three-event
+deterministic aggregator can make planning rules. Once summarized, raw events
+are omitted from retrieval to avoid duplicate context but remain in the
+append-only JSONL audit trail. Forgetting a preference suppresses both its
+source-linked episodic records and derived LLM summaries from future retrieval.
 
 ## Deterministic planner rules
 

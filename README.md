@@ -20,48 +20,72 @@ web interface. The current implementation includes:
 - append-only accept, move, skip, and delete feedback events;
 - three-event behavioral preference learning;
 - a shared `get_memory_context(user_id, goal)` interface;
+- per-user personal RAG for source-linked feedback recall;
+- temporary Markdown session memory that is kept out of long-term retrieval;
 - deterministic preference application and safe schedule reordering;
-- a Memory page for view, edit, pause, resume, and forget actions;
+- a Memory page for view, edit, pause, resume, forget, and explicit LLM
+  consolidation actions;
 - explicit-confirmation Google Calendar writes and feedback synchronization;
 - fully offline automated tests.
 
-Travel, Health, vector databases, LangGraph, multi-agent orchestration, and
-production database persistence are not part of this milestone.
+Travel, Health, LangGraph, multi-agent orchestration, public-place RAG, and
+production deployment persistence are not part of this milestone.
 
 ## End-to-end flow
 
 ```text
 User goal
-  + Calendar
-  + Todo
-  + Weather
-  + Memory Context
         |
         v
-PlannerAgent -> deterministic memory rules -> conflict validator -> DailyPlan
+OpenAI Agents SDK ReAct Planner
+  -> decide which read-only tool to call
+  -> Calendar / Todo / Weather / Memory RAG
+  -> observe tool result and continue (maximum 6 turns)
+        |
+        v
+deterministic memory rules -> conflict validator -> DailyPlan
                                                                   |
                                                                   v
                                               accept / move / skip / delete
                                                                   |
                                                                   v
-                                         EditEvent -> preference aggregation
+                               EditEvent -> preference aggregation + personal RAG
                                                                   |
                                                                   v
                                                       next planning request
 ```
 
+### ReAct planner loop
+
+The production planner is one OpenAI Agents SDK agent with local function
+tools. It must read Calendar and Memory before finalizing a plan, then decides
+whether Todo or Weather is useful for the request. Tool calls are read-only,
+cached within the run, and capped at six SDK turns. The model returns a
+structured plan only after sufficient context is available; local preference
+rules and conflict validation remain the final authority. The offline demo
+uses a deterministic test-double path with the same safety validation.
+
 ## Memory architecture
 
-The current local memory implementation uses an event-sourced write path and a
-derived read model:
+The current local memory implementation separates structured profile data,
+short-lived working context, and long-term retrievable evidence:
 
 1. `FeedbackService` records an immutable `EditEvent`.
 2. `EditEventStore` appends the event to `data/behavior_history.jsonl`.
 3. `PreferenceAggregator` requires three matching events before creating a
    `BehaviorPreference`.
-4. `LocalMemoryContextService` combines explicit profile values, learned
-   preferences, and goal-relevant events.
-5. `PlannerAgent` receives the shared Memory Context and applies active
+4. `RagMemoryContextService` indexes source-linked feedback as per-user
+   episodic memory in a local SQLite store. With `OPENAI_API_KEY` configured,
+   it uses OpenAI `text-embedding-3-small`; otherwise its offline fallback
+   combines token and Chinese character n-gram retrieval. The vector index is
+   derived data and is rebuilt automatically if the embedding provider changes.
+5. On an explicit Memory-page action, `KimiMemorySummarizer` compresses two or
+   more unprocessed feedback events into one factual, source-linked episodic
+   summary. The source event IDs remain auditable in JSONL; the summary never
+   becomes a deterministic scheduling rule by itself.
+6. `SessionMemoryStore` keeps the current goal and temporary constraints in a
+   readable Markdown file. Session files are never indexed as long-term memory.
+7. `PlannerAgent` receives the shared Memory Context and applies active
    preferences through deterministic rules before conflict validation.
 
 The shared contract is:
@@ -71,6 +95,8 @@ get_memory_context(user_id: str, goal: str) -> {
     "profile": dict,
     "preferences": list,
     "relevant_events": list,
+    "relevant_memories": list,  # optional, source-linked RAG results
+    "working_memory": dict | None,  # optional temporary Session Markdown
 }
 ```
 
@@ -95,6 +121,9 @@ Applied rules are exposed in `DailyPlan.assumptions` for explainability.
 - `data/behavior_history.jsonl`: append-only raw feedback evidence.
 - `data/memory_controls.json`: profile overrides and learned-preference edit,
   pause, and forget controls.
+- `data/personal_rag.db`: per-user long-term memory documents and rebuildable
+  local vector chunks.
+- `data/sessions/<user>/<session>.md`: temporary Markdown working memory.
 - `data/google_calendar_syncs.json`: Google Calendar duplicate-write protection.
 
 The entire `data/` directory is ignored by Git. The Memory Context boundary is
@@ -111,7 +140,9 @@ Genshin-Agent/
 |   `-- planner_agent.py          # planning, memory application, validation
 |-- memory/
 |   |-- __init__.py
-|   `-- models.py                 # strict Pydantic contract prototypes
+|   |-- session_memory.py         # short-lived Markdown working memory
+|   |-- models.py                 # strict Pydantic contract prototypes
+|   `-- rag/personal.py           # SQLite documents and local hybrid retrieval
 |-- tools/
 |   |-- calendar_tool.py          # mock and Google Calendar providers
 |   |-- todo_tool.py              # mock and Todoist providers
@@ -171,6 +202,32 @@ KIMI_BASE_URL=https://api.moonshot.ai/v1
 Open-Meteo requires no API key. Set `WEATHER_PROVIDER=mock` for fully offline
 development.
 
+For semantic Personal RAG, add an OpenAI API key to `.env`:
+
+```env
+RAG_EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+`RAG_EMBEDDING_PROVIDER=auto` uses OpenAI when the key is configured and the
+offline provider otherwise. Existing memory chunks are rebuilt when the active
+embedding provider or model changes.
+
+For explicit LLM feedback consolidation, configure the Moonshot-compatible
+Kimi endpoint as well:
+
+```env
+MOONSHOT_API_KEY=your_moonshot_api_key
+KIMI_MODEL=kimi-k3
+KIMI_BASE_URL=https://api.moonshot.ai/v1
+```
+
+In the Memory page, choose **Generate Kimi summary preview** after at least two
+new feedback events. Review or edit the proposed summary, then explicitly
+approve it before it reaches long-term RAG. Only those pending feedback records
+are sent for that one summary request; ordinary retrieval does not call Kimi.
+
 Never commit `.env`, API keys, OAuth credentials, tokens, or user memory files.
 
 ## Run the CLI
@@ -209,7 +266,8 @@ Open <http://127.0.0.1:8501>. The sidebar provides:
 
 - `Planner`: generate, validate, adjust, and optionally sync a daily plan.
 - `Memory`: edit profile values; inspect, edit, pause, resume, or forget learned
-  preferences; and view recent evidence.
+  preferences; view recent evidence; generate a Kimi summary preview; then edit,
+  approve, or discard it before saving to long-term memory.
 - `User ID`: isolate memory by user.
 - `Offline demo mode`: run without a model API key.
 
@@ -247,6 +305,7 @@ Important coverage includes:
 - three-event preference aggregation;
 - profile and preference management controls;
 - safe deterministic memory rules;
+- SDK ReAct tool selection, required Calendar/Memory reads, and bounded turns;
 - three gym moves affecting the next generated plan;
 - Streamlit helper behavior and Google Calendar synchronization.
 
@@ -262,8 +321,12 @@ Important coverage includes:
 
 ## Current limitations
 
-- JSONL and JSON control files are local-development persistence, not a
-  production database.
+- SQLite-backed personal RAG is local-development persistence, not a
+  production service or shared deployment backend.
+- OpenAI embeddings send long-term memory chunks to the configured OpenAI API;
+  use `RAG_EMBEDDING_PROVIDER=hash` when that is not acceptable.
+- Kimi consolidation sends only the selected pending feedback events to the
+  configured Moonshot API when the user clicks the consolidation action.
 - Forgetting a learned preference suppresses the derived memory but does not
   rewrite raw append-only events.
 - Preference decay and contradictory-evidence resolution are not implemented.

@@ -13,6 +13,11 @@ from typing import Any, Literal
 import streamlit as st
 from openai import APIConnectionError, AuthenticationError, RateLimitError
 
+from memory.rag import (
+    HashEmbeddingProvider,
+    MemoryConsolidationError,
+    PersonalRagStore,
+)
 from main import DEMO_GOAL, DemoTextAgent
 from planner_agents.planner_agent import (
     DailyPlan,
@@ -36,6 +41,7 @@ from tools.memory_context import (
     DEFAULT_MEMORY_CONTROLS_PATH,
     LocalMemoryContextService,
     MemoryControlStore,
+    RagMemoryContextService,
 )
 from tools.preference_aggregator import PreferenceAggregator
 
@@ -49,7 +55,7 @@ def build_planner(
     *,
     use_google_calendar: bool = False,
     use_todoist: bool = False,
-    memory_service: LocalMemoryContextService | None = None,
+    memory_service: LocalMemoryContextService | RagMemoryContextService | None = None,
 ) -> PlannerAgent:
     """Create either the deterministic demo planner or the configured live one."""
 
@@ -65,7 +71,15 @@ def build_planner(
         if use_todoist
         else get_todos
     )
-    service = memory_service or LocalMemoryContextService()
+    # Direct demo calls remain fully offline.  The Streamlit app supplies its
+    # configured service explicitly, so normal app usage keeps OpenAI RAG.
+    service = memory_service or (
+        RagMemoryContextService(
+            rag_store=PersonalRagStore(embedder=HashEmbeddingProvider())
+        )
+        if demo_mode
+        else RagMemoryContextService()
+    )
     if not demo_mode:
         return PlannerAgent(
             calendar_getter=calendar_getter,
@@ -256,15 +270,29 @@ def generate_plan(
     use_google_calendar: bool = False,
     use_todoist: bool = False,
     user_id: str = "default",
-    memory_service: LocalMemoryContextService | None = None,
+    memory_service: LocalMemoryContextService | RagMemoryContextService | None = None,
 ) -> DailyPlan:
     """Run the async planner from Streamlit's synchronous execution model."""
+
+    service = memory_service or (
+        RagMemoryContextService(
+            rag_store=PersonalRagStore(embedder=HashEmbeddingProvider())
+        )
+        if demo_mode
+        else RagMemoryContextService()
+    )
+    if isinstance(service, RagMemoryContextService):
+        service.begin_session(
+            user_id,
+            f"daily-plan-{target_date.isoformat()}",
+            goal,
+        )
 
     planner = build_planner(
         demo_mode,
         use_google_calendar=use_google_calendar,
         use_todoist=use_todoist,
-        memory_service=memory_service,
+        memory_service=service,
     )
     return asyncio.run(
         planner.create_daily_plan(
@@ -544,7 +572,7 @@ def parse_preference_value(raw_value: str) -> dict[str, str]:
 def render_memory_page(
     user_id: str,
     *,
-    memory_service: LocalMemoryContextService | None = None,
+    memory_service: LocalMemoryContextService | RagMemoryContextService | None = None,
 ) -> None:
     """Render inspect, edit, pause, resume, and forget controls for memory."""
 
@@ -559,6 +587,58 @@ def render_memory_page(
         "supporting evidence. Paused memories remain visible but are ignored "
         "by the planner."
     )
+
+    if isinstance(service, RagMemoryContextService):
+        st.subheader("LLM memory summaries")
+        st.caption(
+            "Summarize two or more unprocessed feedback events with Kimi. "
+            "The result remains an explainable episodic memory, not a hard rule."
+        )
+        preview_key = f"memory-consolidation-preview:{user_id}"
+        if st.button("Generate Kimi summary preview"):
+            try:
+                preview = service.preview_feedback_consolidation(user_id)
+            except (MemoryConsolidationError, ValueError) as exc:
+                st.error(str(exc))
+            else:
+                if preview is None:
+                    st.info("At least two new feedback events are needed first.")
+                else:
+                    st.session_state[preview_key] = preview
+
+        preview = st.session_state.get(preview_key)
+        if preview is not None:
+            st.info(
+                f"Preview only — based on {len(preview.source_ids)} feedback events. "
+                "Edit it if needed, then approve before it enters long-term memory."
+            )
+            with st.form(f"{preview_key}-form"):
+                title = st.text_input("Summary title", value=preview.summary.title)
+                content = st.text_area("Summary", value=preview.summary.summary)
+                importance = st.slider(
+                    "Importance", 0.0, 1.0, float(preview.summary.importance), 0.05
+                )
+                approve, discard = st.columns(2)
+                approved = approve.form_submit_button("Approve and save to long-term memory")
+                discarded = discard.form_submit_button("Discard preview")
+            if discarded:
+                del st.session_state[preview_key]
+                st.rerun()
+            if approved:
+                try:
+                    summary = service.confirm_feedback_consolidation(
+                        user_id,
+                        preview,
+                        title=title,
+                        content=content,
+                        importance=importance,
+                    )
+                except (MemoryConsolidationError, ValueError) as exc:
+                    st.error(str(exc))
+                else:
+                    del st.session_state[preview_key]
+                    st.success(f"Saved long-term summary: {summary['title']}")
+                    st.rerun()
 
     profile = context["profile"]
     st.subheader("Profile memory")
@@ -696,9 +776,11 @@ def main() -> None:
             "MOONSHOT_API_KEY in .env."
         )
 
-    memory_service = LocalMemoryContextService(
-        event_store=EditEventStore(BEHAVIOR_HISTORY_PATH),
-        control_store=MemoryControlStore(DEFAULT_MEMORY_CONTROLS_PATH),
+    memory_service = RagMemoryContextService(
+        base_service=LocalMemoryContextService(
+            event_store=EditEventStore(BEHAVIOR_HISTORY_PATH),
+            control_store=MemoryControlStore(DEFAULT_MEMORY_CONTROLS_PATH),
+        )
     )
     if page == "Memory":
         render_memory_page(user_id, memory_service=memory_service)

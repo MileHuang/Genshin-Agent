@@ -12,10 +12,11 @@ from pathlib import Path
 
 from openai import AuthenticationError
 
+from memory.rag import HashEmbeddingProvider, PersonalRagStore
 from planner_agents.planner_agent import PlannerAgent, PlannerConfigurationError
 from tools.edit_event import EditEventStore
 from tools.feedback_service import FeedbackService
-from tools.memory_context import get_memory_context
+from tools.memory_context import RagMemoryContextService, get_memory_context
 from tools.weather_tool import MockWeatherProvider, get_weather
 from tools.calendar_tool import GoogleCalendarProvider, get_calendar_events
 from tools.todo_tool import TodoistProvider, get_todos
@@ -80,6 +81,18 @@ def parse_args() -> argparse.Namespace:
 
 async def run() -> None:
     args = parse_args()
+    memory_service = (
+        RagMemoryContextService(
+            rag_store=PersonalRagStore(embedder=HashEmbeddingProvider())
+        )
+        if args.demo
+        else RagMemoryContextService()
+    )
+    memory_service.begin_session(
+        args.user_id,
+        f"daily-plan-{args.target_date}",
+        args.goal,
+    )
     calendar_getter = (
         (lambda target_date: get_calendar_events(
             target_date, provider=GoogleCalendarProvider()
@@ -97,6 +110,7 @@ async def run() -> None:
             DemoTextAgent(),
             calendar_getter=calendar_getter,
             todo_getter=todo_getter,
+            memory_getter=memory_service.get_memory_context,
             weather_getter=lambda location, target_date: get_weather(
                 location,
                 target_date,
@@ -107,6 +121,7 @@ async def run() -> None:
         else PlannerAgent(
             calendar_getter=calendar_getter,
             todo_getter=todo_getter,
+            memory_getter=memory_service.get_memory_context,
         )
     )
     try:

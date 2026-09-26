@@ -204,6 +204,7 @@ ENGLISH_WEATHER_KEYWORDS = {
     "driving",
     "flight",
 }
+MAX_REACT_TURNS = 6
 
 
 class PlannerAgent:
@@ -220,9 +221,12 @@ class PlannerAgent:
         memory_getter: Callable[..., Any] = get_memory_context,
         preference_getter: Callable[..., Any] | None = None,
         max_revision_attempts: int = 1,
+        max_react_turns: int = MAX_REACT_TURNS,
     ) -> None:
         if max_revision_attempts < 0:
             raise ValueError("max_revision_attempts must be non-negative")
+        if max_react_turns < 1:
+            raise ValueError("max_react_turns must be at least 1")
         self.text_agent = text_agent
         self.sdk_model = sdk_model
         self.calendar_getter = calendar_getter
@@ -231,6 +235,7 @@ class PlannerAgent:
         self.memory_getter = memory_getter
         self.preference_getter = preference_getter
         self.max_revision_attempts = max_revision_attempts
+        self.max_react_turns = max_react_turns
 
     async def create_daily_plan(
         self,
@@ -365,42 +370,22 @@ class PlannerAgent:
         location: str | None,
         user_id: str,
     ) -> DailyPlan:
-        """Fetch context deterministically, then generate through the SDK."""
+        """Run a bounded ReAct loop through OpenAI Agents SDK function tools."""
 
-        calendar_events = await self._call_tool(
-            "calendar", self.calendar_getter, plan_date
-        )
-        todos = self._validate_todos(
-            await self._call_tool("todo", self.todo_getter)
-        )
-        memory_context = await self._load_memory_context(user_id, clean_goal)
-        tools_used = ["calendar", "todo", "memory"]
-
-        weather_context: dict[str, Any] | None = None
         routing_assumptions: list[str] = []
-        if self._goal_needs_weather(clean_goal):
-            if location:
-                weather_context = await self._call_tool(
-                    "weather", self.weather_getter, location, plan_date
-                )
-                tools_used.append("weather")
-            else:
-                routing_assumptions.append(
-                    "Weather was not checked because no location was provided."
-                )
+        if self._goal_needs_weather(clean_goal) and not location:
+            routing_assumptions.append(
+                "Weather was not checked because no location was provided."
+            )
 
-        sdk_agent, _, _ = self._build_sdk_agent(
+        sdk_agent, tool_state, _ = self._build_sdk_agent(
             clean_goal,
             plan_date=plan_date,
             location=location,
+            user_id=user_id,
         )
-        initial_prompt = self._build_prompt(
-            goal=clean_goal,
-            target_date=plan_date,
-            calendar_events=calendar_events,
-            todos=todos,
-            memory_context=memory_context,
-            weather=weather_context,
+        initial_prompt = self._build_react_prompt(
+            goal=clean_goal, target_date=plan_date, location=location
         )
 
         conflicts: list[str] = []
@@ -410,11 +395,22 @@ class PlannerAgent:
                 prompt = (
                     f"{initial_prompt}\n\n"
                     "The previous plan had these deterministic conflicts. "
-                    "Return only a corrected complete JSON object:\n"
+                    "Use the available read-only tools as needed, then return only "
+                    "a corrected complete JSON object:\n"
                     f"{json.dumps(conflicts, ensure_ascii=False)}"
                 )
 
-            draft = await self._generate_draft_with_sdk(sdk_agent, prompt)
+            draft = await self._generate_draft_with_sdk(
+                sdk_agent, prompt, max_turns=self.max_react_turns
+            )
+            calendar_events = tool_state.get("calendar_events")
+            memory_context = tool_state.get("memory_context")
+            if calendar_events is None or memory_context is None:
+                raise PlannerToolError(
+                    "ReAct planner must read calendar and memory before finalizing."
+                )
+            todos = tool_state.get("todos", [])
+            weather_context = tool_state.get("weather")
             draft, memory_assumptions = self._apply_memory_context(
                 draft,
                 calendar_events,
@@ -434,7 +430,7 @@ class PlannerAgent:
                         + routing_assumptions
                         + memory_assumptions
                     ),
-                    tools_used=tools_used,
+                    tools_used=list(tool_state["tools_used"]),
                     calendar_events_considered=len(calendar_events),
                     todo_items_considered=len(todos),
                     memory_preferences_considered=len(
@@ -546,6 +542,8 @@ class PlannerAgent:
         self,
         sdk_agent: Any,
         prompt: str,
+        *,
+        max_turns: int = MAX_REACT_TURNS,
     ) -> PlanDraft:
         """Run the Agents SDK and validate Kimi's JSON-compatible text."""
 
@@ -557,7 +555,7 @@ class PlannerAgent:
                 "`python -m pip install -r requirements.txt`."
             ) from exc
 
-        result = await Runner.run(sdk_agent, prompt)
+        result = await Runner.run(sdk_agent, prompt, max_turns=max_turns)
         output = result.final_output
         if isinstance(output, PlanDraft):
             return output
@@ -578,11 +576,13 @@ class PlannerAgent:
         *,
         plan_date: str,
         location: str | None,
+        user_id: str = "default",
     ) -> tuple[Any, dict[str, Any], list[str]]:
         try:
             from agents import (
                 Agent,
                 OpenAIChatCompletionsModel,
+                function_tool,
                 set_tracing_disabled,
             )
         except ImportError as exc:
@@ -610,20 +610,114 @@ class PlannerAgent:
                 openai_client=client,
             )
 
+        tool_state: dict[str, Any] = {
+            "calendar_events": None,
+            "memory_context": None,
+            "todos": [],
+            "weather": None,
+            "tools_used": [],
+        }
+
+        def record_tool(name: str) -> None:
+            if name not in tool_state["tools_used"]:
+                tool_state["tools_used"].append(name)
+
+        @function_tool(
+            name_override="read_calendar",
+            description_override="Read fixed calendar events for the planning date.",
+        )
+        async def read_calendar() -> str:
+            """Return fixed commitments that cannot be moved."""
+
+            if tool_state["calendar_events"] is None:
+                events = await self._call_tool(
+                    "calendar", self.calendar_getter, plan_date
+                )
+                if not isinstance(events, list):
+                    raise PlannerToolError("calendar tool must return an event list")
+                tool_state["calendar_events"] = events
+                record_tool("calendar")
+            return json.dumps(tool_state["calendar_events"], ensure_ascii=False, default=str)
+
+        @function_tool(
+            name_override="read_todos",
+            description_override="Read the user's open Todo items when they help plan the goal.",
+        )
+        async def read_todos() -> str:
+            """Return open Todo items."""
+
+            if "todo" not in tool_state["tools_used"]:
+                tool_state["todos"] = self._validate_todos(
+                    await self._call_tool("todo", self.todo_getter)
+                )
+                record_tool("todo")
+            return json.dumps(tool_state["todos"], ensure_ascii=False, default=str)
+
+        @function_tool(
+            name_override="read_memory",
+            description_override="Retrieve this user's goal-relevant profile, preferences, and memory.",
+        )
+        async def read_memory() -> str:
+            """Return the scoped memory context for the current goal."""
+
+            if tool_state["memory_context"] is None:
+                tool_state["memory_context"] = await self._load_memory_context(
+                    user_id, goal
+                )
+                record_tool("memory")
+            return json.dumps(
+                tool_state["memory_context"], ensure_ascii=False, default=str
+            )
+
+        tools = [read_calendar, read_todos, read_memory]
+        if location:
+            @function_tool(
+                name_override="read_weather",
+                description_override="Read the forecast for the supplied location and planning date.",
+            )
+            async def read_weather() -> str:
+                """Return weather only when it is useful to the plan."""
+
+                if "weather" not in tool_state["tools_used"]:
+                    tool_state["weather"] = await self._call_tool(
+                        "weather", self.weather_getter, location, plan_date
+                    )
+                    record_tool("weather")
+                return json.dumps(
+                    tool_state["weather"], ensure_ascii=False, default=str
+                )
+
+            tools.append(read_weather)
+
         instructions = (
             f"{AGENT_SYSTEM_PROMPT}\n\n{PLANNER_PROMPT}\n\n"
-            "The caller supplies calendar, todo, memory, and optional weather "
-            "context directly in the message. Base the plan only on that context "
-            "and return no text outside the required JSON object."
+            "You are a bounded ReAct planner. First decide which read-only tools "
+            "you need. You MUST call read_calendar and read_memory before producing "
+            "a plan. Call read_todos when open tasks could matter. Call read_weather "
+            "only when a location is available and weather could affect the goal. "
+            "Use tool output as the only source of external facts. Do not call a tool "
+            "more than once; its result is cached. When sufficient context is gathered, "
+            "return only the required plan JSON object."
         )
 
         sdk_agent = Agent(
             name="Personal Planner Agent",
             instructions=instructions,
             model=model,
-            tools=[],
+            tools=tools,
         )
-        return sdk_agent, {}, []
+        return sdk_agent, tool_state, []
+
+    @staticmethod
+    def _build_react_prompt(
+        *, goal: str, target_date: str, location: str | None
+    ) -> str:
+        return (
+            "Plan this request using your available read-only tools.\n"
+            f"Goal: {goal}\nDate: {target_date}\n"
+            f"Location: {location or 'not provided'}\n"
+            "Do not expose internal reasoning. Return JSON only after tool use."
+        )
 
     @staticmethod
     def _goal_needs_weather(goal: str) -> bool:

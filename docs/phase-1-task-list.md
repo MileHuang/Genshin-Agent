@@ -17,6 +17,7 @@ Goal + Calendar + Todo + Memory + Weather
 - [x] Mock Calendar, Todo, Profile, and Weather providers
 - [x] Optional Google Calendar and Todoist providers
 - [x] OpenAI Agents SDK planner with Kimi-compatible JSON parsing
+- [x] Bounded ReAct loop with SDK function tools for Calendar, Todo, Weather, and Memory
 - [x] Structured `DailyPlan` output
 - [x] Deterministic schedule and fixed-event conflict validation
 - [x] `get_memory_context(user_id, goal)` planner integration
@@ -34,6 +35,9 @@ Goal + Calendar + Todo + Memory + Weather
 - [x] Learned preference edit, pause, resume, and forget controls
 - [x] Streamlit Memory page
 - [x] End-to-end test: three gym moves influence the next plan
+- [x] Per-user local Personal RAG with source-linked episodic feedback recall
+- [x] Temporary Markdown session memory kept outside the long-term index
+- [x] Explicit Kimi LLM consolidation into source-linked episodic summaries
 
 ## Completed product entry points
 
@@ -46,25 +50,27 @@ Goal + Calendar + Todo + Memory + Weather
 
 ## Next backend integration task
 
-Replace the local JSONL/control-file implementation with the durable
-MemoryService while preserving this shared contract:
+Harden the local Personal RAG for durable deployment while preserving this
+shared contract:
 
 ```python
 get_memory_context(user_id: str, goal: str) -> {
     "profile": dict,
     "preferences": list,
     "relevant_events": list,
+    "relevant_memories": list,
+    "working_memory": dict | None,
 }
 ```
 
-The replacement must keep stable memory IDs and support profile updates,
-preference edits, pause/resume, and forget operations.
+The replacement must keep stable memory IDs, user isolation, source links,
+profile updates, preference edits, pause/resume, and forget operations.
 
 ## Deferred
 
-- Production SQLite migrations and data migration
+- Production migrations and data migration
 - Authentication and authorization
 - Preference decay and contradiction resolution
 - Raw-event retention and deletion policies
-- Travel, Health, LangGraph, multi-agent orchestration, vector databases,
+- Travel and public-place RAG, Health, LangGraph, multi-agent orchestration,
   PostgreSQL, and Redis
