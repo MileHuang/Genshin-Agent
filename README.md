@@ -139,7 +139,12 @@ tool platform, reusable skills, public Travel RAG, and Travel Agent work.
 ```text
 Genshin-Agent/
 |-- planner_agents/
-|   `-- planner_agent.py          # planning, memory application, validation
+|   |-- contracts.py              # stable plan models and text-agent protocol
+|   |-- context.py                # read-only provider contracts and memory loading
+|   |-- prompts.py                # prompts, routing, and model-output parsing
+|   |-- react_runtime.py          # OpenAI Agents SDK ReAct tools and runtime
+|   |-- validation.py             # deterministic memory rules and conflict checks
+|   `-- planner_agent.py          # small backward-compatible planning facade
 |-- memory/
 |   |-- __init__.py
 |   |-- session_memory.py         # short-lived Markdown working memory
