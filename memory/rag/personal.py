@@ -197,7 +197,11 @@ class RetrievedMemory:
 
 
 class PersonalRagStore:
-    """SQLite-backed canonical records plus a rebuildable local vector index."""
+    """SQLite-backed layered records plus a rebuildable local vector index.
+
+    Candidate records may be retained for traceability, but retrieval admits
+    only active records. Promotion to long-term RAG is therefore explicit.
+    """
 
     def __init__(
         self,

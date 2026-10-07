@@ -160,7 +160,7 @@ def test_session_markdown_is_temporary_and_not_long_term_rag(tmp_path):
     assert "No meetings after 18:00" in loaded.body
 
 
-def test_rag_context_syncs_feedback_and_keeps_profile_and_session_separate(tmp_path):
+def test_rag_context_keeps_raw_feedback_as_candidate_and_profile_and_session_separate(tmp_path):
     events = EditEventStore(tmp_path / "events.jsonl")
     feedback = FeedbackService(events)
     feedback.move(
@@ -188,8 +188,8 @@ def test_rag_context_syncs_feedback_and_keeps_profile_and_session_separate(tmp_p
 
     assert context["profile"]["timezone"] == "America/New_York"
     assert context["working_memory"]["session_id"] == "daily"
-    assert context["relevant_memories"][0]["memory_id"].startswith("edit-event:")
-    assert context["relevant_memories"][0]["source_ids"]
+    assert len(context["relevant_events"]) == 1
+    assert context["relevant_memories"] == []
 
 
 def test_forgotten_preference_evidence_is_not_reintroduced_by_rag(tmp_path):

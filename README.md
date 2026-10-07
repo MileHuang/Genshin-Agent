@@ -67,22 +67,24 @@ uses a deterministic test-double path with the same safety validation.
 
 ## Memory architecture
 
-The current local memory implementation separates structured profile data,
-short-lived working context, and long-term retrievable evidence:
+The current local memory implementation uses explicit layers: structured
+profile data, short-lived working context, raw candidate evidence, verified
+behavioral rules, and promoted long-term retrievable evidence:
 
 1. `FeedbackService` records an immutable `EditEvent`.
 2. `EditEventStore` appends the event to `data/behavior_history.jsonl`.
 3. `PreferenceAggregator` requires three matching events before creating a
    `BehaviorPreference`.
-4. `RagMemoryContextService` indexes source-linked feedback as per-user
-   episodic memory in a local SQLite store. With `OPENAI_API_KEY` configured,
-   it uses OpenAI `text-embedding-3-small`; otherwise its offline fallback
-   combines token and Chinese character n-gram retrieval. The vector index is
-   derived data and is rebuilt automatically if the embedding provider changes.
+4. `RagMemoryContextService` records source-linked feedback as per-user,
+   30-day `candidate` records in local SQLite. Candidates remain auditable but
+   are not eligible for long-term RAG retrieval.
 5. On an explicit Memory-page action, `KimiMemorySummarizer` compresses two or
-   more unprocessed feedback events into one factual, source-linked episodic
-   summary. The source event IDs remain auditable in JSONL; the summary never
-   becomes a deterministic scheduling rule by itself.
+   more unprocessed feedback events into one reviewed, factual, source-linked
+   `active` episodic summary. Only promoted summaries are retrievable. With
+   `OPENAI_API_KEY` configured, RAG uses OpenAI `text-embedding-3-small`;
+   otherwise its offline fallback combines token and Chinese character n-gram
+   retrieval. The vector index is derived data and is rebuilt automatically if
+   the embedding provider changes.
 6. `SessionMemoryStore` keeps the current goal and temporary constraints in a
    readable Markdown file. Session files are never indexed as long-term memory.
 7. `PlannerAgent` receives the shared Memory Context and applies active
@@ -121,8 +123,9 @@ Applied rules are exposed in `DailyPlan.assumptions` for explainability.
 - `data/behavior_history.jsonl`: append-only raw feedback evidence.
 - `data/memory_controls.json`: profile overrides and learned-preference edit,
   pause, and forget controls.
-- `data/personal_rag.db`: per-user long-term memory documents and rebuildable
-  local vector chunks.
+- `data/personal_rag.db`: candidate and promoted long-term documents, plus
+  rebuildable local vector chunks. Candidates expire after 30 days and are
+  never returned by RAG.
 - `data/sessions/<user>/<session>.md`: temporary Markdown working memory.
 - `data/google_calendar_syncs.json`: Google Calendar duplicate-write protection.
 

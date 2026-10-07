@@ -36,11 +36,21 @@ from tools.preference_tool import DEFAULT_BEHAVIOR_HISTORY_PATH, DEFAULT_PROFILE
 DEFAULT_MEMORY_CONTROLS_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "memory_controls.json"
 )
+# Raw feedback is useful while a plan is being refined, but one edit should not
+# become durable retrievable context. Candidates are promoted only by an
+# explicitly reviewed summary.
+CANDIDATE_MEMORY_RETENTION = timedelta(days=30)
 MemoryStatus = Literal["active", "paused"]
 
 
 class MemoryContext(TypedDict):
-    """Planner-facing memory response shared by local and durable backends."""
+    """Planner-facing layered-memory response shared by local and durable backends.
+
+    ``relevant_events`` is the candidate/episodic layer; ``relevant_memories``
+    contains only promoted long-term RAG records. Profile, preferences, and
+    working memory are respectively stable facts, verified behavior, and the
+    temporary session layer.
+    """
 
     profile: dict[str, Any]
     preferences: list[dict[str, Any]]
@@ -524,7 +534,12 @@ class RagMemoryContextService:
         }
 
     def _sync_feedback_events(self, user_id: str) -> None:
-        """Create source-linked episodic memories from immutable feedback."""
+        """Sync raw feedback into expiring, non-retrievable candidate memory.
+
+        The append-only event store remains the audit source. SQLite candidates
+        make promotion traceable, while ``candidate`` keeps one-off edits out
+        of long-term RAG until a reviewed consolidation promotes them.
+        """
 
         for event in self.base_service.event_store.list_events(user_id=user_id):
             if (
@@ -550,7 +565,7 @@ class RagMemoryContextService:
                     memory_id=f"edit-event:{event.event_id}",
                     user_id=user_id,
                     memory_type="episode",
-                    status="active",
+                    status="candidate",
                     title=f"Planning feedback: {event.activity_type}",
                     content=content,
                     source_ids=(event.event_id, event.source_plan_id),
@@ -558,6 +573,7 @@ class RagMemoryContextService:
                     confidence=1.0,
                     importance=0.35,
                     occurred_at=event.timestamp,
+                    expires_at=event.timestamp + CANDIDATE_MEMORY_RETENTION,
                 )
             )
 
