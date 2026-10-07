@@ -105,6 +105,42 @@ get_memory_context(user_id: str, goal: str) -> {
 Learned preferences include a stable `memory_id`, confidence, evidence count,
 source event IDs, structured value, and `active` or `paused` status.
 
+### Layered memory lifecycle
+
+The layers have different write paths and different authority. This prevents a
+single temporary request or edit from silently becoming a long-term scheduling
+rule.
+
+| Layer | Stored in | Written when | Read by the planner | Authority |
+| --- | --- | --- | --- | --- |
+| Working | `data/sessions/<user>/<session>.md` | A planning session starts | Latest non-expired session | Current goal and temporary constraints |
+| Candidate | JSONL audit trail and SQLite `candidate` document | Every feedback event | `relevant_events`; never by RAG | Evidence only |
+| Episodic | SQLite `active` document and vector chunks | A user reviews and approves a consolidation | Goal-based RAG retrieval | Context only |
+| Behavioral | Derived from the event stream, with JSON controls | Three matching feedback events | `preferences` | Deterministic soft scheduling rules |
+| Profile | JSON controls and SQLite profile values | Explicit user edit | `profile` | Stable background constraints |
+
+```text
+current goal + temporary constraints
+    -> working-memory Markdown
+
+plan feedback
+    -> immutable JSONL event
+    -> candidate memory (not retrievable through RAG)
+    -> [user reviews and approves a summary]
+    -> active episodic RAG memory
+
+three matching feedback events
+    -> verified behavioral preference
+    -> deterministic rule, subject to calendar conflicts
+```
+
+An active episodic record can help the model understand relevant past context,
+but cannot change a plan by itself. The precedence order is: fixed calendar
+events and the user’s current request, then working memory, then active
+behavioral preferences, then episodic RAG context. Candidate records are kept
+for traceability and promotion; their SQLite expiry is 30 days, while the raw
+JSONL audit log remains append-only.
+
 ### Applied preference rules
 
 - `preferred_time_range`: safely move the matching activity into the preferred
