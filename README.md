@@ -10,8 +10,8 @@ deterministic safety checks.
 
 ## Current status
 
-The Phase 1 Daily Planner MVP is runnable through both a CLI and a Streamlit
-web interface. The current implementation includes:
+The Phase 1 Daily Planner MVP and Phase 2A tool-reliability layer are runnable
+through both a CLI and a Streamlit web interface. The current implementation includes:
 
 - mock Calendar, Todo, Profile, and Weather data;
 - optional Google Calendar and Todoist reads;
@@ -26,7 +26,12 @@ web interface. The current implementation includes:
 - a Memory page for view, edit, pause, resume, forget, and explicit LLM
   consolidation actions;
 - explicit-confirmation Google Calendar writes and feedback synchronization;
-- fully offline automated tests.
+- fully offline automated tests;
+- a typed tool registry with input/output schemas, permissions, timeouts, and
+  approval enforcement for write-capable tools;
+- a payload-free execution trace showing cache use and explicit fallbacks;
+- safe Todo, Memory, and Weather provider fallbacks, while Calendar failure
+  remains a hard safety error.
 
 Travel, Health, LangGraph, multi-agent orchestration, public-place RAG, and
 production deployment persistence are not part of this milestone.
@@ -44,6 +49,7 @@ OpenAI Agents SDK ReAct Planner
         |
         v
 deterministic memory rules -> conflict validator -> DailyPlan
+  -> public tool trace (status / cache / fallback; no hidden reasoning)
                                                                   |
                                                                   v
                                               accept / move / skip / delete
@@ -143,6 +149,7 @@ Genshin-Agent/
 |   |-- context.py                # read-only provider contracts and memory loading
 |   |-- prompts.py                # prompts, routing, and model-output parsing
 |   |-- react_runtime.py          # OpenAI Agents SDK ReAct tools and runtime
+|   |-- tool_platform.py          # typed registry, permissions, cache, trace, fallbacks
 |   |-- validation.py             # deterministic memory rules and conflict checks
 |   `-- planner_agent.py          # small backward-compatible planning facade
 |-- memory/
@@ -315,6 +322,8 @@ Important coverage includes:
 - SDK ReAct tool selection, required Calendar/Memory reads, and bounded turns;
 - three gym moves affecting the next generated plan;
 - Streamlit helper behavior and Google Calendar synchronization.
+- typed tool schemas, cache traces, malformed-output rejection, safe provider
+  fallbacks, unnecessary-call avoidance, and write approval enforcement.
 
 ## Collaboration rules
 

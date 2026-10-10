@@ -66,6 +66,15 @@ get_memory_context(user_id: str, goal: str) -> {
 The replacement must keep stable memory IDs, user isolation, source links,
 profile updates, preference edits, pause/resume, and forget operations.
 
+## Completed Phase 2A reliability layer
+
+- [x] Typed tool registry with input/output schemas, permission, timeout, and description
+- [x] Compact public execution trace with cache and fallback status
+- [x] ReAct evaluation coverage for routing, required reads, turn bounds, malformed output, and failures
+- [x] Explicit read-only fallbacks without invented Todo, Memory, or Weather facts
+- [x] Registration and runtime approval boundary for every write-capable tool
+- [x] Human-readable tool trace in Streamlit
+
 ## Deferred
 
 - Production migrations and data migration

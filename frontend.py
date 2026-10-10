@@ -378,13 +378,19 @@ def render_plan(
     with left:
         st.markdown("#### Planning context")
         st.write(", ".join(plan.tools_used) or "None")
+        with st.expander("How planning tools were used"):
+            st.caption("This trace shows tool activity only; it does not expose private model reasoning.")
+            if plan.tool_trace:
+                st.dataframe(tool_trace_rows(plan), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No tool execution trace is available for this plan.")
         if plan.assumptions:
             st.markdown("#### Assumptions")
             for assumption in plan.assumptions:
                 st.write(f"• {assumption}")
     with right:
         st.markdown("#### Weather")
-        if plan.weather:
+        if plan.weather and plan.weather.get("available", True):
             weather: dict[str, Any] = plan.weather
             st.write(f"**{weather.get('location', '')}** · {weather.get('condition', '')}")
             low = weather.get("temperature_low_c")
@@ -392,11 +398,30 @@ def render_plan(
             if low is not None and high is not None:
                 st.write(f"{low}°C – {high}°C")
             st.caption(str(weather.get("planning_advice", "")))
+        elif plan.weather:
+            st.warning(str(plan.weather.get("message", "Weather data is unavailable.")))
         else:
             st.caption("This goal does not require weather context.")
 
     with st.expander("View complete JSON"):
         st.json(plan.model_dump(mode="json"))
+
+
+def tool_trace_rows(plan: DailyPlan) -> list[dict[str, str]]:
+    """Build a human-readable, payload-free tool audit table."""
+
+    return [
+        {
+            "Tool": item.context_label.title(),
+            "Purpose": item.description,
+            "Permission": item.permission.value,
+            "Status": item.status,
+            "Cache": "reused" if item.cache_used else "fresh",
+            "Fallback": "yes" if item.fallback_applied else "no",
+            "Result": item.message,
+        }
+        for item in plan.tool_trace
+    ]
 
 
 def render_feedback_controls(
