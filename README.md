@@ -107,8 +107,8 @@ The folders above are planned structure and will be created as implementation be
 ### 1. Clone the repository
 
 ```powershell
-git clone <repository-url>
-cd AIAgentProject
+git clone https://github.com/MileHuang/Genshin-Agent.git
+cd Genshin-Agent
 ```
 
 If the repository already exists locally, open the folder directly in VS Code.
