@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 import streamlit as st
 from openai import APIConnectionError, AuthenticationError, RateLimitError
@@ -49,6 +50,45 @@ from planner_agents.validation import ensure_calendar_slot_available
 
 BEHAVIOR_HISTORY_PATH = Path(__file__).resolve().parent / "data" / "behavior_history.jsonl"
 FeedbackAction = Literal["accept", "move", "skip", "delete"]
+
+
+def _planner_user() -> str:
+    return str(st.session_state.get("planner_user_id", "default")).strip() or "default"
+
+
+def _on_planner_user_change() -> None:
+    """Cancel transient review/request state, never persisted user evidence."""
+    st.session_state["planner_active_user_id"] = _planner_user()
+    for key in list(st.session_state):
+        if key in {
+            "daily_plan", "planner_result", "planner_request", "feedback_message",
+            "calendar_synced_plan_key", "planner_goal", "planner_date", "planner_location",
+        } or key.startswith(("accept-", "skip-", "delete-", "start-", "end-", "move-")):
+            st.session_state.pop(key, None)
+
+
+def _complete_plan_request(request_id: str, user_id: str, plan: DailyPlan) -> bool:
+    """Only the still-current request can publish a result to this session."""
+    if (
+        st.session_state.get("planner_request") != (request_id, user_id)
+        or st.session_state.get("planner_active_user_id") != user_id
+        or _planner_user() != user_id
+    ):
+        return False
+    st.session_state["planner_result"] = {"user_id": user_id, "plan": plan}
+    st.session_state.pop("planner_request", None)
+    st.session_state.pop("calendar_synced_plan_key", None)
+    return True
+
+
+def _plan_is_current(plan: DailyPlan, user_id: str) -> bool:
+    result = st.session_state.get("planner_result", {})
+    return (
+        result.get("plan") is plan
+        and result.get("user_id") == user_id
+        and st.session_state.get("planner_active_user_id") == user_id
+        and _planner_user() == user_id
+    )
 
 
 def build_planner(
@@ -309,12 +349,19 @@ def render_plan(
 ) -> None:
     """Render a validated plan and its supporting context."""
 
+    if not _plan_is_current(plan, user_id):
+        return
+
+    st.subheader(f"Your plan · {plan.date.isoformat()}")
+    st.caption(f"Goal: {plan.goal}")
+    st.write(plan.summary)
     status = "Conflict checks passed" if plan.validation.is_valid else "Conflicts found"
     if plan.validation.is_valid:
         st.success(status)
     else:
         st.error(status)
-    st.subheader(plan.summary)
+        for conflict in plan.validation.conflicts:
+            st.write(f"• {conflict}")
 
     metric_columns = st.columns(4)
     metric_columns[0].metric("Plan items", len(plan.schedule))
@@ -322,24 +369,30 @@ def render_plan(
     metric_columns[2].metric("Todo items", plan.todo_items_considered)
     metric_columns[3].metric("Memory rules", plan.memory_preferences_considered)
 
-    st.dataframe(
-        schedule_rows(plan),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Time": st.column_config.TextColumn(width="small"),
-            "Item": st.column_config.TextColumn(width="medium"),
-            "Notes": st.column_config.TextColumn(width="large"),
-        },
-    )
-
-    render_feedback_controls(
-        plan,
-        sync_google_calendar=allow_calendar_sync,
-        user_id=user_id,
-    )
+    if plan.schedule:
+        st.markdown("#### Schedule")
+        st.dataframe(
+            schedule_rows(plan),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Time": st.column_config.TextColumn(width="small"),
+                "Item": st.column_config.TextColumn(width="medium"),
+                "Notes": st.column_config.TextColumn(width="large"),
+            },
+        )
+        render_feedback_controls(
+            plan,
+            sync_google_calendar=allow_calendar_sync,
+            user_id=user_id,
+        )
+    else:
+        st.info(
+            "No activities remain in this plan. Update your goal above and "
+            "choose Generate plan to start again. Your feedback has been saved."
+        )
     render_learning_dashboard(user_id=user_id)
-    if allow_calendar_sync:
+    if allow_calendar_sync and plan.schedule and plan.validation.is_valid:
         sync_key = calendar_sync_key(plan)
         sync_store = CalendarSyncStore()
         st.markdown("#### Sync to Google Calendar")
@@ -356,6 +409,8 @@ def render_plan(
             type="primary",
             disabled=already_synced,
         ):
+            if not _plan_is_current(plan, user_id):
+                return
             try:
                 items = calendar_sync_items(plan)
                 created = GoogleCalendarProvider().create_events(
@@ -489,6 +544,8 @@ def _handle_feedback_action(
     sync_google_calendar: bool = False,
     user_id: str = "default",
 ) -> None:
+    if not _plan_is_current(plan, user_id):
+        return
     try:
         original_sync_key = calendar_sync_key(plan)
         sync_store = CalendarSyncStore()
@@ -520,6 +577,8 @@ def _handle_feedback_action(
             )
     except (CalendarConfigurationError, CalendarOperationError, ValueError) as exc:
         st.error(str(exc))
+        return
+    if not _plan_is_current(plan, user_id):
         return
     st.session_state["feedback_message"] = message
     st.rerun()
@@ -776,7 +835,10 @@ def main() -> None:
 
     with st.sidebar:
         page = st.radio("Page", ("Planner", "Memory"))
-        user_id = st.text_input("User ID", value="default").strip() or "default"
+        user_id = st.text_input(
+            "User ID", value="default", key="planner_user_id",
+            on_change=_on_planner_user_change,
+        ).strip() or "default"
         st.header("Runtime settings")
         demo_mode = st.toggle(
             "Offline demo mode",
@@ -798,6 +860,9 @@ def main() -> None:
             "MOONSHOT_API_KEY in .env."
         )
 
+    if st.session_state.get("planner_active_user_id") != user_id:
+        _on_planner_user_change()
+
     memory_service = RagMemoryContextService(
         base_service=LocalMemoryContextService(
             event_store=EditEventStore(BEHAVIOR_HISTORY_PATH),
@@ -809,12 +874,16 @@ def main() -> None:
         return
 
     with st.form("planner_form"):
-        goal = st.text_area("What do you want to accomplish?", value=DEMO_GOAL, height=130)
+        goal = st.text_area(
+            "What do you want to accomplish?", value=DEMO_GOAL, height=130,
+            key="planner_goal",
+        )
         date_column, location_column = st.columns(2)
-        target_date = date_column.date_input("Plan date", value=date.today())
+        target_date = date_column.date_input("Plan date", value=date.today(), key="planner_date")
         location = location_column.text_input(
             "Location (for weather-sensitive goals)",
             placeholder="Example: Madison, WI",
+            key="planner_location",
         )
         submitted = st.form_submit_button(
             "Generate plan",
@@ -827,8 +896,10 @@ def main() -> None:
             st.warning("Enter a goal before generating a plan.")
             return
         try:
+            request_id = uuid4().hex
+            st.session_state["planner_request"] = (request_id, user_id)
             with st.spinner("Collecting context and applying constraints..."):
-                st.session_state["daily_plan"] = generate_plan(
+                generated_plan = generate_plan(
                     goal=goal,
                     target_date=target_date,
                     location=location,
@@ -838,8 +909,8 @@ def main() -> None:
                     user_id=user_id,
                     memory_service=memory_service,
                 )
-                # A newly generated plan is eligible for one explicit sync.
-                st.session_state.pop("calendar_synced_plan_key", None)
+                if not _complete_plan_request(request_id, user_id, generated_plan):
+                    return
         except (CalendarConfigurationError, TodoistConfigurationError) as exc:
             st.error(f"Tool configuration failed: {exc}")
         except PlannerConfigurationError as exc:
@@ -856,13 +927,18 @@ def main() -> None:
     if isinstance(feedback_message, str):
         st.success(feedback_message)
 
-    plan = st.session_state.get("daily_plan")
-    if isinstance(plan, DailyPlan):
+    plan = st.session_state.get("planner_result", {}).get("plan")
+    if isinstance(plan, DailyPlan) and _plan_is_current(plan, user_id):
         st.divider()
         render_plan(
             plan,
             allow_calendar_sync=use_google_calendar,
             user_id=user_id,
+        )
+    else:
+        st.info(
+            "Start with a goal and plan date above, then choose Generate plan. "
+            "Review the schedule here before adjusting it or syncing to Google Calendar."
         )
 
 

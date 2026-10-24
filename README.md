@@ -291,6 +291,15 @@ Open <http://127.0.0.1:8501>. The sidebar provides:
 - `User ID`: isolate memory by user.
 - `Offline demo mode`: run without a model API key.
 
+The Planner review shows the generated plan's date and goal above its schedule.
+First-visit and empty-schedule messages explain the next step. Removing all
+activities hides adjustment and sync controls while preserving feedback; plans
+with reported conflicts show the details and cannot be synced from the review.
+Switching User ID clears the transient plan review and feedback notice. Each
+result belongs to its requesting user and request; cancelled or superseded
+results cannot reappear after a switch, including a switch back to the same ID.
+Saved feedback, memory, and calendar sync records are retained.
+
 ## Optional integrations
 
 ### Google Calendar

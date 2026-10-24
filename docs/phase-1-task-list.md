@@ -44,6 +44,8 @@ Goal + Calendar + Todo + Memory + Weather
 - [x] Deterministic offline CLI demo
 - [x] Optional interactive CLI feedback
 - [x] Streamlit Planner page
+- [x] Planner date/goal overview, first-visit and empty-schedule guidance, and visible conflict details with sync disabled
+- [x] User-bound plan review and request completion; switching identity cancels transient results without deleting saved evidence
 - [x] Streamlit Memory page
 - [x] Explicit-confirmation Google Calendar sync
 - [x] Google Calendar MOVE and DELETE synchronization
