@@ -31,6 +31,23 @@ web interface. The current implementation includes:
 Travel, Health, LangGraph, multi-agent orchestration, public-place RAG, and
 production deployment persistence are not part of this milestone.
 
+### Keene branch update
+
+Keene's [planner review and user isolation branch](https://github.com/MileHuang/Genshin-Agent/tree/keene/planner-review-user-isolation)
+documents the next implementation, which is pending integration into `main`:
+
+- a typed tool registry with schemas, permissions, timeouts, safe read fallbacks,
+  and a payload-free tool trace;
+- clearer plan review states and request ownership when the selected user changes;
+- fixed-calendar checks when users move activities after plan generation;
+- Unicode activity identifiers for feedback and memory rules;
+- repeatable Google Calendar batch creation after partial failure.
+
+Its documented limits include calendar snapshots that do not refresh during
+editing, retries restricted to an unchanged Calendar batch, and same-day clock
+times. See the [Phase 2A roadmap](docs/next-phase-roadmap.md) for integration
+status. The code for these branch updates is not yet on `main`.
+
 ## End-to-end flow
 
 ```text

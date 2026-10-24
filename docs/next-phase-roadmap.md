@@ -22,6 +22,11 @@ and deterministic validation remains the final authority for schedules.
 
 Goal: make tool use observable, testable, and safe before adding more domains.
 
+Keene's [`keene/planner-review-user-isolation` branch](https://github.com/MileHuang/Genshin-Agent/tree/keene/planner-review-user-isolation)
+reports these items complete and adds offline evaluations. The boxes below
+track integration into `main`; they remain open until that branch's code is
+merged and verified here.
+
 - [ ] Add a typed tool registry with name, input/output schema, permission
   level (`read`, `draft`, `write`), timeout, and user-facing description.
 - [ ] Record a compact execution trace: which tools were called, whether cache

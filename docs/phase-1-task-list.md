@@ -66,6 +66,23 @@ get_memory_context(user_id: str, goal: str) -> {
 The replacement must keep stable memory IDs, user isolation, source links,
 profile updates, preference edits, pause/resume, and forget operations.
 
+## Keene branch work pending integration into main
+
+The [Keene branch](https://github.com/MileHuang/Genshin-Agent/tree/keene/planner-review-user-isolation)
+implements and documents the following work. These remain open in this list
+until the corresponding code is merged into `main`:
+
+- [ ] Typed tool registry, schema validation, permissions, cache trace, and safe provider fallbacks
+- [ ] ReAct evaluations for routing, required reads, turn limits, and failures
+- [ ] Planner date/goal overview, empty-schedule guidance, and visible conflict details
+- [ ] User-bound plan review and cancellation of superseded requests on identity switches
+- [ ] Unicode activity identifiers shared by CLI, Streamlit, and memory rules
+- [ ] Fixed-calendar checks for manual and CLI conflict-resolution moves
+- [ ] Stable Calendar batch IDs and guarded retry after partial failure
+
+Cross-midnight events, unified timezone handling, and context-aware preference
+inference remain follow-up work on Keene's branch as well.
+
 ## Deferred
 
 - Production migrations and data migration
