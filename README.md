@@ -379,3 +379,14 @@ Important coverage includes:
 - Authentication and authorization for shared deployments are not implemented.
 - The Pydantic models under `memory/` and runtime dataclasses under `tools/`
   remain separate until the durable MemoryService migration.
+
+## Contributors
+
+Contributors identified from the repository's commit history:
+
+- Mile Huang
+- Zixuan Xia
+- KeeneLee
+
+See the [GitHub contributors graph](https://github.com/MileHuang/Genshin-Agent/graphs/contributors)
+for commit-based attribution.
