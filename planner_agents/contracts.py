@@ -7,7 +7,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from planner_agents.tool_platform import ToolExecutionTrace
+from planner_agents.tool_platform import CalendarEventOutput, ToolExecutionTrace
 
 
 class TextAgent(Protocol):
@@ -85,6 +85,7 @@ class DailyPlan(BaseModel):
     tools_used: list[str] = Field(default_factory=list)
     tool_trace: list[ToolExecutionTrace] = Field(default_factory=list)
     calendar_events_considered: int = Field(ge=0)
+    calendar_events: list[CalendarEventOutput] = Field(default_factory=list)
     todo_items_considered: int = Field(default=0, ge=0)
     memory_preferences_considered: int = Field(default=0, ge=0)
     weather: dict[str, Any] | None = None

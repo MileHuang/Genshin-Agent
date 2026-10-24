@@ -1,8 +1,11 @@
 from datetime import date, datetime
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from tools.calendar_tool import (
+    CalendarOperationError,
     GoogleCalendarProvider,
     TOOL_DESCRIPTION,
     TOOL_NAME,
@@ -195,3 +198,89 @@ def test_google_provider_can_create_update_and_delete_events(monkeypatch, tmp_pa
     assert service.resource.patch_kwargs["eventId"] == "created-event"
     assert service.resource.patch_kwargs["body"]["start"]["dateTime"] == "2026-08-25T09:00:00"
     assert service.resource.delete_kwargs["eventId"] == "created-event"
+
+
+class _DuplicateEventError(Exception):
+    resp = SimpleNamespace(status=409)
+
+
+class _RetryEvents:
+    """Stateful remote double, including commit-before-response-loss."""
+
+    def __init__(self, *, fail_call=2, response_lost=False):
+        self.saved = {}
+        self.insert_count = 0
+        self.fail_call = fail_call
+        self.response_lost = response_lost
+
+    def insert(self, **kwargs):
+        resource = self
+        body = deepcopy(kwargs["body"])
+
+        class Request:
+            def execute(self):
+                resource.insert_count += 1
+                event_id = body["id"]
+                if event_id in resource.saved:
+                    raise _DuplicateEventError()
+                should_fail = resource.insert_count == resource.fail_call
+                if should_fail and not resource.response_lost:
+                    raise ConnectionError("offline before insertion")
+                for field in ("start", "end"):
+                    body[field]["dateTime"] += "+08:00"
+                resource.saved[event_id] = body
+                if should_fail:
+                    raise ConnectionError("response lost after insertion")
+                return deepcopy(body)
+
+        return Request()
+
+    def get(self, **kwargs):
+        return _MutationRequest(deepcopy(self.saved[kwargs["eventId"]]))
+
+
+def _retry_provider(monkeypatch, resource):
+    provider = GoogleCalendarProvider(timezone_name="Asia/Shanghai")
+    monkeypatch.setattr(provider, "_get_service", lambda: SimpleNamespace(events=lambda: resource))
+    return provider
+
+
+def _sync_items():
+    return [
+        {"title": "Study", "start_time": "09:00", "end_time": "10:00", "notes": "Review"},
+        {"title": "Gym", "start_time": "18:00", "end_time": "19:00"},
+    ]
+
+
+@pytest.mark.parametrize("response_lost", [False, True])
+def test_same_batch_retry_recovers_partial_success_without_duplicates(monkeypatch, response_lost):
+    resource = _RetryEvents(response_lost=response_lost)
+    provider = _retry_provider(monkeypatch, resource)
+    with pytest.raises(CalendarOperationError, match="retry the unchanged plan"):
+        provider.create_events("2026-08-25", _sync_items())
+    assert len(resource.saved) == (2 if response_lost else 1)
+
+    # A new provider models a restart before the local sync record was saved.
+    restarted = _retry_provider(monkeypatch, resource)
+    ids = restarted.create_events("2026-08-25", _sync_items())
+    assert len(resource.saved) == len(ids) == 2
+    assert set(ids) == set(resource.saved)
+    assert restarted.create_events("2026-08-25", _sync_items()) == ids
+    assert all(len(event_id) == 64 and set(event_id) <= set("0123456789abcdef") for event_id in ids)
+
+
+@pytest.mark.parametrize("change", ["foreign", "moved", "cancelled"])
+def test_retry_rejects_existing_event_that_no_longer_matches(monkeypatch, change):
+    resource = _RetryEvents(fail_call=None)
+    provider = _retry_provider(monkeypatch, resource)
+    ids = provider.create_events("2026-08-25", _sync_items())
+    event = resource.saved[ids[0]]
+    if change == "foreign":
+        event["extendedProperties"] = {}
+    elif change == "moved":
+        event["start"]["dateTime"] = "2026-08-25T08:00:00+08:00"
+    else:
+        event["status"] = "cancelled"
+    with pytest.raises(CalendarOperationError, match="could not be verified"):
+        provider.create_events("2026-08-25", _sync_items())
+    assert len(resource.saved) == 2

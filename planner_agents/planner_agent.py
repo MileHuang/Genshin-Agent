@@ -241,6 +241,7 @@ class PlannerAgent:
             assumptions=(adjusted_draft.assumptions + routing_assumptions
                          + memory_assumptions + fallback_assumptions),
             tools_used=tools_used, calendar_events_considered=len(calendar_events),
+            calendar_events=calendar_events,
             tool_trace=tool_trace,
             todo_items_considered=len(todos),
             memory_preferences_considered=len(memory_context["preferences"]),

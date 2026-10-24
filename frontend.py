@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, time
 from pathlib import Path
@@ -44,6 +43,8 @@ from tools.memory_context import (
     RagMemoryContextService,
 )
 from tools.preference_aggregator import PreferenceAggregator
+from tools.activity import activity_type as _activity_type
+from planner_agents.validation import ensure_calendar_slot_available
 
 
 BEHAVIOR_HISTORY_PATH = Path(__file__).resolve().parent / "data" / "behavior_history.jsonl"
@@ -214,17 +215,13 @@ def _parse_time(value: str) -> time:
     return datetime.strptime(value, "%H:%M").time()
 
 
-def _activity_type(title: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", title.casefold()).strip("_")
-    return normalized or "general"
-
-
 def _ensure_no_schedule_conflict(
     plan: DailyPlan,
     selected_index: int,
     start: datetime,
     end: datetime,
 ) -> None:
+    ensure_calendar_slot_available(plan, start.strftime("%H:%M"), end.strftime("%H:%M"))
     for index, item in enumerate(plan.schedule):
         if index == selected_index:
             continue

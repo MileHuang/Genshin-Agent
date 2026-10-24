@@ -60,6 +60,8 @@ class CalendarEventOutput(BaseModel):
             raise ValueError("event times must use 24-hour HH:MM format") from exc
         if start >= end:
             raise ValueError("calendar event end_time must be later than start_time")
+        self.start_time = start.strftime("%H:%M")
+        self.end_time = end.strftime("%H:%M")
         return self
 
 

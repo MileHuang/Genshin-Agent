@@ -75,6 +75,16 @@ profile updates, preference edits, pause/resume, and forget operations.
 - [x] Registration and runtime approval boundary for every write-capable tool
 - [x] Human-readable tool trace in Streamlit
 
+## Correctness follow-up
+
+- [x] Shared Unicode activity identifiers for CLI, Streamlit, and memory rules
+- [x] Retain fixed events in DailyPlan and reject conflicting manual moves before writes
+- [x] Check both moves during CLI conflict resolution against fixed events
+- [x] Resume an unchanged Calendar batch after partial failure using stable event IDs
+- [x] Reject recovery when an existing event is foreign, modified, or cancelled
+- [ ] Context-aware preference inference, contradiction handling, and relevance evaluation
+- [ ] Cross-midnight events and consistent timezone handling throughout the feedback loop
+
 ## Deferred
 
 - Production migrations and data migration

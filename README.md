@@ -26,6 +26,12 @@ through both a CLI and a Streamlit web interface. The current implementation inc
 - a Memory page for view, edit, pause, resume, forget, and explicit LLM
   consolidation actions;
 - explicit-confirmation Google Calendar writes and feedback synchronization;
+- fixed-calendar snapshots retained in `DailyPlan` and checked before CLI or
+  Streamlit moves, including moves proposed during CLI conflict resolution;
+- Unicode activity identifiers shared by feedback and memory rules, including
+  Chinese activity names and explicit-goal matching;
+- repeatable Google Calendar batch creation using stable event IDs, allowing
+  the unchanged batch to resume after partial failure or a lost response;
 - fully offline automated tests;
 - a typed tool registry with input/output schemas, permissions, timeouts, and
   approval enforcement for write-capable tools;
@@ -322,6 +328,8 @@ Important coverage includes:
 - SDK ReAct tool selection, required Calendar/Memory reads, and bounded turns;
 - three gym moves affecting the next generated plan;
 - Streamlit helper behavior and Google Calendar synchronization.
+- Chinese activity feedback/matching and fixed-event checks after manual edits;
+- partial Calendar sync recovery, lost responses, and verification of existing events;
 - typed tool schemas, cache traces, malformed-output rejection, safe provider
   fallbacks, unnecessary-call avoidance, and write approval enforcement.
 
@@ -337,6 +345,17 @@ Important coverage includes:
 
 ## Current limitations
 
+- Edit checks use the fixed-calendar snapshot from plan generation; they do not
+  refresh external calendar changes. Older plans that lack a snapshot must be
+  regenerated before moving items when fixed events were considered.
+- Calendar retry recovery applies to the exact same date, ordered schedule,
+  calendar, and timezone. After partial failure, retry the unchanged plan before
+  editing it; changed batches and events created by older versions are not
+  deduplicated. Existing events that were changed or deleted stop recovery.
+- Activity matching preserves Chinese names but does not infer synonyms or
+  migrate older feedback whose names were already reduced to `general`/`other`.
+- Plans still use same-day clock times; cross-midnight scheduling and unified
+  calendar/session/feedback timezone handling remain follow-up work.
 - SQLite-backed personal RAG is local-development persistence, not a
   production service or shared deployment backend.
 - OpenAI embeddings send long-term memory chunks to the configured OpenAI API;

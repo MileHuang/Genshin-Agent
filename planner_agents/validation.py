@@ -4,10 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from planner_agents.contracts import PlanDraft, PlanValidation
+from planner_agents.contracts import DailyPlan, PlanDraft, PlanValidation
 from planner_agents.errors import PlannerToolError
 from tools.memory_rules import apply_memory_rules
 from tools.validator_tool import validate_schedule
+
+
+def ensure_calendar_slot_available(plan: DailyPlan, start: str, end: str) -> None:
+    """Check edits against the same fixed commitments used during planning."""
+    if len(plan.calendar_events) != plan.calendar_events_considered:
+        raise ValueError("Fixed calendar context is missing. Generate a new plan before moving items.")
+    for event in plan.calendar_events:
+        if start < event.end_time and event.start_time < end:
+            raise ValueError(f'The new time conflicts with fixed calendar event "{event.title}".')
 
 
 def apply_memory_context(
