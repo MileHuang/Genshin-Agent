@@ -10,8 +10,8 @@ deterministic safety checks.
 
 ## Current status
 
-The Phase 1 Daily Planner MVP is runnable through both a CLI and a Streamlit
-web interface. The current implementation includes:
+The Phase 1 Daily Planner MVP and Phase 2A tool-reliability layer are runnable
+through both a CLI and a Streamlit web interface. The current implementation includes:
 
 - mock Calendar, Todo, Profile, and Weather data;
 - optional Google Calendar and Todoist reads;
@@ -26,27 +26,21 @@ web interface. The current implementation includes:
 - a Memory page for view, edit, pause, resume, forget, and explicit LLM
   consolidation actions;
 - explicit-confirmation Google Calendar writes and feedback synchronization;
-- fully offline automated tests.
+- fixed-calendar snapshots retained in `DailyPlan` and checked before CLI or
+  Streamlit moves, including moves proposed during CLI conflict resolution;
+- Unicode activity identifiers shared by feedback and memory rules, including
+  Chinese activity names and explicit-goal matching;
+- repeatable Google Calendar batch creation using stable event IDs, allowing
+  the unchanged batch to resume after partial failure or a lost response;
+- fully offline automated tests;
+- a typed tool registry with input/output schemas, permissions, timeouts, and
+  approval enforcement for write-capable tools;
+- a payload-free execution trace showing cache use and explicit fallbacks;
+- safe Todo, Memory, and Weather provider fallbacks, while Calendar failure
+  remains a hard safety error.
 
 Travel, Health, LangGraph, multi-agent orchestration, public-place RAG, and
 production deployment persistence are not part of this milestone.
-
-### Keene branch update
-
-Keene's [planner review and user isolation branch](https://github.com/MileHuang/Genshin-Agent/tree/keene/planner-review-user-isolation)
-documents the next implementation, which is pending integration into `main`:
-
-- a typed tool registry with schemas, permissions, timeouts, safe read fallbacks,
-  and a payload-free tool trace;
-- clearer plan review states and request ownership when the selected user changes;
-- fixed-calendar checks when users move activities after plan generation;
-- Unicode activity identifiers for feedback and memory rules;
-- repeatable Google Calendar batch creation after partial failure.
-
-Its documented limits include calendar snapshots that do not refresh during
-editing, retries restricted to an unchanged Calendar batch, and same-day clock
-times. See the [Phase 2A roadmap](docs/next-phase-roadmap.md) for integration
-status. The code for these branch updates is not yet on `main`.
 
 ## End-to-end flow
 
@@ -61,6 +55,7 @@ OpenAI Agents SDK ReAct Planner
         |
         v
 deterministic memory rules -> conflict validator -> DailyPlan
+  -> public tool trace (status / cache / fallback; no hidden reasoning)
                                                                   |
                                                                   v
                                               accept / move / skip / delete
@@ -199,6 +194,7 @@ Genshin-Agent/
 |   |-- context.py                # read-only provider contracts and memory loading
 |   |-- prompts.py                # prompts, routing, and model-output parsing
 |   |-- react_runtime.py          # OpenAI Agents SDK ReAct tools and runtime
+|   |-- tool_platform.py          # typed registry, permissions, cache, trace, fallbacks
 |   |-- validation.py             # deterministic memory rules and conflict checks
 |   `-- planner_agent.py          # small backward-compatible planning facade
 |-- memory/
@@ -334,6 +330,15 @@ Open <http://127.0.0.1:8501>. The sidebar provides:
 - `User ID`: isolate memory by user.
 - `Offline demo mode`: run without a model API key.
 
+The Planner review shows the generated plan's date and goal above its schedule.
+First-visit and empty-schedule messages explain the next step. Removing all
+activities hides adjustment and sync controls while preserving feedback; plans
+with reported conflicts show the details and cannot be synced from the review.
+Switching User ID clears the transient plan review and feedback notice. Each
+result belongs to its requesting user and request; cancelled or superseded
+results cannot reappear after a switch, including a switch back to the same ID.
+Saved feedback, memory, and calendar sync records are retained.
+
 ## Optional integrations
 
 ### Google Calendar
@@ -370,7 +375,11 @@ Important coverage includes:
 - safe deterministic memory rules;
 - SDK ReAct tool selection, required Calendar/Memory reads, and bounded turns;
 - three gym moves affecting the next generated plan;
-- Streamlit helper behavior and Google Calendar synchronization.
+- Streamlit helper behavior and Google Calendar synchronization;
+- Chinese activity feedback/matching and fixed-event checks after manual edits;
+- partial Calendar sync recovery, lost responses, and verification of existing events;
+- typed tool schemas, cache traces, malformed-output rejection, safe provider
+  fallbacks, unnecessary-call avoidance, and write approval enforcement.
 
 ## Collaboration rules
 
@@ -384,6 +393,17 @@ Important coverage includes:
 
 ## Current limitations
 
+- Edit checks use the fixed-calendar snapshot from plan generation; they do not
+  refresh external calendar changes. Older plans that lack a snapshot must be
+  regenerated before moving items when fixed events were considered.
+- Calendar retry recovery applies to the exact same date, ordered schedule,
+  calendar, and timezone. After partial failure, retry the unchanged plan before
+  editing it; changed batches and events created by older versions are not
+  deduplicated. Existing events that were changed or deleted stop recovery.
+- Activity matching preserves Chinese names but does not infer synonyms or
+  migrate older feedback whose names were already reduced to `general`/`other`.
+- Plans still use same-day clock times; cross-midnight scheduling and unified
+  calendar/session/feedback timezone handling remain follow-up work.
 - SQLite-backed personal RAG is local-development persistence, not a
   production service or shared deployment backend.
 - OpenAI embeddings send long-term memory chunks to the configured OpenAI API;

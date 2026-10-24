@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -20,6 +19,8 @@ from tools.memory_context import RagMemoryContextService, get_memory_context
 from tools.weather_tool import MockWeatherProvider, get_weather
 from tools.calendar_tool import GoogleCalendarProvider, get_calendar_events
 from tools.todo_tool import TodoistProvider, get_todos
+from tools.activity import activity_type as _activity_type
+from planner_agents.validation import ensure_calendar_slot_available
 
 
 DEMO_GOAL = (
@@ -278,6 +279,12 @@ def _resolve_move(
 ):
     """Return a safe move or ask for preference-guided conflict resolution."""
 
+    try:
+        ensure_calendar_slot_available(plan, new_start.strftime("%H:%M"), new_end.strftime("%H:%M"))
+    except ValueError as exc:
+        print(str(exc))
+        return None
+
     conflicts = _find_conflicts(
         plan,
         new_start,
@@ -347,6 +354,14 @@ def _resolve_move(
             user_id=user_id,
         )
 
+    try:
+        ensure_calendar_slot_available(
+            plan, replacement_start.strftime("%H:%M"), replacement_end.strftime("%H:%M")
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return None
+
     remaining_conflicts = _find_conflicts(
         plan,
         replacement_start,
@@ -408,13 +423,6 @@ def _preference_score(item, start: datetime, end: datetime, learned_preferences:
         if preferred_start <= start.time() and end.time() <= preferred_end:
             best_score = max(best_score, float(preference.get("confidence", 0)))
     return best_score
-
-
-def _activity_type(title: str) -> str:
-    """Create a stable activity type from a free-text title."""
-
-    normalised = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
-    return normalised or "other"
 
 
 if __name__ == "__main__":

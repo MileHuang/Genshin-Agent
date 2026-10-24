@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from datetime import datetime
 from typing import Any
+
+from tools.activity import mentions_activity
 
 
 def apply_memory_rules(
@@ -195,22 +196,14 @@ def _move_or_swap(
 
 
 def _matches_activity(item: dict[str, Any], activity_type: str) -> bool:
-    activity_tokens = set(re.findall(r"[a-z0-9]+", activity_type.casefold()))
-    if not activity_tokens:
-        return False
-    title_tokens = set(
-        re.findall(r"[a-z0-9]+", str(item.get("title", "")).casefold())
+    return any(
+        mentions_activity(str(item.get(field, "")), activity_type)
+        for field in ("title", "category")
     )
-    category_tokens = set(
-        re.findall(r"[a-z0-9]+", str(item.get("category", "")).casefold())
-    )
-    return activity_tokens <= title_tokens or activity_tokens <= category_tokens
 
 
 def _goal_mentions(goal: str, activity_type: str) -> bool:
-    goal_tokens = set(re.findall(r"[a-z0-9]+", goal.casefold()))
-    activity_tokens = set(re.findall(r"[a-z0-9]+", activity_type.casefold()))
-    return bool(goal_tokens & activity_tokens)
+    return mentions_activity(goal, activity_type)
 
 
 def _item_range(item: dict[str, Any]) -> tuple[int, int] | None:

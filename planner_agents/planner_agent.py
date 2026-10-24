@@ -32,6 +32,12 @@ from planner_agents.prompts import (
 )
 from planner_agents.react_runtime import ReActPlannerRuntime
 from planner_agents.validation import apply_memory_context, validate_draft
+from planner_agents.tool_platform import (
+    DEFAULT_TOOL_REGISTRY,
+    ToolExecutionTrace,
+    ToolExecutor,
+    ToolRegistry,
+)
 from tools.calendar_tool import get_calendar_events
 from tools.memory_context import get_memory_context
 from tools.todo_tool import get_todos
@@ -56,6 +62,7 @@ class PlannerAgent:
         preference_getter: Callable[..., Any] | None = None,
         max_revision_attempts: int = 1,
         max_react_turns: int = MAX_REACT_TURNS,
+        tool_registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
     ) -> None:
         if max_revision_attempts < 0:
             raise ValueError("max_revision_attempts must be non-negative")
@@ -70,12 +77,15 @@ class PlannerAgent:
         self.preference_getter = preference_getter
         self.max_revision_attempts = max_revision_attempts
         self.max_react_turns = max_react_turns
+        self.tool_registry = tool_registry
+        self.tool_executor = ToolExecutor(tool_registry)
         self._react_runtime = ReActPlannerRuntime(
             sdk_model=sdk_model,
             calendar_getter=calendar_getter,
             todo_getter=todo_getter,
             weather_getter=weather_getter,
             memory_loader=self._load_memory_context,
+            tool_registry=tool_registry,
         )
 
     async def create_daily_plan(
@@ -111,15 +121,29 @@ class PlannerAgent:
     ) -> DailyPlan:
         """Offline fallback retaining deterministic test-double support."""
 
-        calendar_events = await self._call_tool("calendar", self.calendar_getter, plan_date)
-        todos = self._validate_todos(await self._call_tool("todo", self.todo_getter))
-        memory_context = await self._load_memory_context(user_id, clean_goal)
+        tool_cache: dict[str, Any] = {}
+        tool_trace = []
+        calendar_events = await self.tool_executor.execute(
+            "calendar", self.calendar_getter, {"target_date": plan_date},
+            cache=tool_cache, trace=tool_trace,
+        )
+        todos = await self.tool_executor.execute(
+            "todo", self.todo_getter, {}, cache=tool_cache, trace=tool_trace,
+        )
+        memory_context = await self.tool_executor.execute(
+            "memory", self._load_memory_context, {"user_id": user_id, "goal": clean_goal},
+            cache=tool_cache, trace=tool_trace,
+        )
         tools_used = ["calendar", "todo", "memory"]
         weather_context: dict[str, Any] | None = None
         routing_assumptions: list[str] = []
         if self._goal_needs_weather(clean_goal):
             if location:
-                weather_context = await self._call_tool("weather", self.weather_getter, location, plan_date)
+                weather_context = await self.tool_executor.execute(
+                    "weather", self.weather_getter,
+                    {"location": location, "target_date": plan_date},
+                    cache=tool_cache, trace=tool_trace,
+                )
                 tools_used.append("weather")
             else:
                 routing_assumptions.append("Weather was not checked because no location was provided.")
@@ -138,6 +162,7 @@ class PlannerAgent:
                 calendar_events=calendar_events, todos=todos,
                 memory_context=memory_context, weather=weather_context,
                 tools_used=tools_used, routing_assumptions=routing_assumptions,
+                tool_trace=tool_trace,
             )
             if plan is not None:
                 return plan
@@ -178,6 +203,7 @@ class PlannerAgent:
                 calendar_events=calendar_events, todos=tool_state.get("todos", []),
                 memory_context=memory_context, weather=tool_state.get("weather"),
                 tools_used=list(tool_state["tools_used"]), routing_assumptions=routing_assumptions,
+                tool_trace=list(tool_state["tool_trace"]),
             )
             if plan is not None:
                 return plan
@@ -196,18 +222,27 @@ class PlannerAgent:
         weather: dict[str, Any] | None,
         tools_used: list[str],
         routing_assumptions: list[str],
+        tool_trace: list[ToolExecutionTrace],
     ) -> tuple[DailyPlan | None, PlanValidation]:
         adjusted_draft, memory_assumptions = self._apply_memory_context(
             draft, calendar_events, memory_context, goal
         )
+        fallback_assumptions = list(dict.fromkeys(
+            f"{item.description} {item.message}"
+            for item in tool_trace
+            if item.fallback_applied
+        ))
         validation = self._validate_draft(adjusted_draft, calendar_events)
         if not validation.is_valid:
             return None, validation
         return DailyPlan(
             date=plan_date, goal=goal, summary=adjusted_draft.summary,
             schedule=adjusted_draft.schedule,
-            assumptions=adjusted_draft.assumptions + routing_assumptions + memory_assumptions,
+            assumptions=(adjusted_draft.assumptions + routing_assumptions
+                         + memory_assumptions + fallback_assumptions),
             tools_used=tools_used, calendar_events_considered=len(calendar_events),
+            calendar_events=calendar_events,
+            tool_trace=tool_trace,
             todo_items_considered=len(todos),
             memory_preferences_considered=len(memory_context["preferences"]),
             weather=weather, validation=validation,

@@ -22,20 +22,15 @@ and deterministic validation remains the final authority for schedules.
 
 Goal: make tool use observable, testable, and safe before adding more domains.
 
-Keene's [`keene/planner-review-user-isolation` branch](https://github.com/MileHuang/Genshin-Agent/tree/keene/planner-review-user-isolation)
-reports these items complete and adds offline evaluations. The boxes below
-track integration into `main`; they remain open until that branch's code is
-merged and verified here.
-
-- [ ] Add a typed tool registry with name, input/output schema, permission
+- [x] Add a typed tool registry with name, input/output schema, permission
   level (`read`, `draft`, `write`), timeout, and user-facing description.
-- [ ] Record a compact execution trace: which tools were called, whether cache
+- [x] Record a compact execution trace: which tools were called, whether cache
   was used, and whether a fallback was applied. Never expose hidden reasoning.
-- [ ] Add ReAct evaluations for tool selection, required Calendar/Memory reads,
+- [x] Add ReAct evaluations for tool selection, required Calendar/Memory reads,
   turn limits, malformed tool output, and provider failure recovery.
-- [ ] Add explicit read-only failure fallbacks. A failed Weather or Place lookup
+- [x] Add explicit read-only failure fallbacks. A failed Weather, Todo, or Memory lookup
   must not make the planner invent facts or silently fail.
-- [ ] Keep all write-capable tools behind an approval boundary; no automatic
+- [x] Keep all write-capable tools behind an approval boundary; no automatic
   Calendar changes, reservations, purchases, or messages.
 
 Exit criteria:

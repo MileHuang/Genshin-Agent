@@ -10,10 +10,10 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from config.settings import AGENT_SYSTEM_PROMPT, KIMI_BASE_URL, KIMI_MODEL, KIMI_TIMEOUT_SECONDS, MOONSHOT_API_KEY
-from planner_agents.context import call_tool, validate_todos
 from planner_agents.contracts import PlanDraft
 from planner_agents.errors import PlannerConfigurationError, PlannerOutputError, PlannerToolError
 from planner_agents.prompts import PLANNER_PROMPT, parse_draft
+from planner_agents.tool_platform import DEFAULT_TOOL_REGISTRY, ToolExecutor, ToolRegistry
 
 
 class ReActPlannerRuntime:
@@ -27,12 +27,15 @@ class ReActPlannerRuntime:
         todo_getter: Callable[..., Any],
         weather_getter: Callable[..., Any],
         memory_loader: Callable[[str, str], Awaitable[dict[str, Any]]],
+        tool_registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
     ) -> None:
         self.sdk_model = sdk_model
         self.calendar_getter = calendar_getter
         self.todo_getter = todo_getter
         self.weather_getter = weather_getter
         self.memory_loader = memory_loader
+        self.tool_registry = tool_registry
+        self.tool_executor = ToolExecutor(tool_registry)
 
     def build_agent(
         self, *, goal: str, plan_date: str, location: str | None, user_id: str
@@ -56,7 +59,7 @@ class ReActPlannerRuntime:
 
         state: dict[str, Any] = {
             "calendar_events": None, "memory_context": None, "todos": [],
-            "weather": None, "tools_used": [],
+            "weather": None, "tools_used": [], "tool_trace": [], "tool_cache": {},
         }
 
         def record(name: str) -> None:
@@ -66,28 +69,31 @@ class ReActPlannerRuntime:
         @function_tool(name_override="read_calendar", description_override="Read fixed calendar events for the planning date.")
         async def read_calendar() -> str:
             """Return fixed commitments that cannot be moved."""
-            if state["calendar_events"] is None:
-                events = await call_tool("calendar", self.calendar_getter, plan_date)
-                if not isinstance(events, list):
-                    raise PlannerToolError("calendar tool must return an event list")
-                state["calendar_events"] = events
-                record("calendar")
+            events = await self.tool_executor.execute(
+                "calendar", self.calendar_getter, {"target_date": plan_date},
+                cache=state["tool_cache"], trace=state["tool_trace"],
+            )
+            state["calendar_events"] = events
+            record("calendar")
             return json.dumps(state["calendar_events"], ensure_ascii=False, default=str)
 
         @function_tool(name_override="read_todos", description_override="Read open Todo items when they help plan the goal.")
         async def read_todos() -> str:
             """Return open Todo items."""
-            if "todo" not in state["tools_used"]:
-                state["todos"] = validate_todos(await call_tool("todo", self.todo_getter))
-                record("todo")
+            state["todos"] = await self.tool_executor.execute(
+                "todo", self.todo_getter, {}, cache=state["tool_cache"], trace=state["tool_trace"]
+            )
+            record("todo")
             return json.dumps(state["todos"], ensure_ascii=False, default=str)
 
         @function_tool(name_override="read_memory", description_override="Retrieve goal-relevant profile, preferences, and personal memory.")
         async def read_memory() -> str:
             """Return scoped memory for this planning request."""
-            if state["memory_context"] is None:
-                state["memory_context"] = await self.memory_loader(user_id, goal)
-                record("memory")
+            state["memory_context"] = await self.tool_executor.execute(
+                "memory", self.memory_loader, {"user_id": user_id, "goal": goal},
+                cache=state["tool_cache"], trace=state["tool_trace"],
+            )
+            record("memory")
             return json.dumps(state["memory_context"], ensure_ascii=False, default=str)
 
         tools = [read_calendar, read_todos, read_memory]
@@ -95,9 +101,12 @@ class ReActPlannerRuntime:
             @function_tool(name_override="read_weather", description_override="Read the forecast for the supplied location and planning date.")
             async def read_weather() -> str:
                 """Return weather only when it is useful to the plan."""
-                if "weather" not in state["tools_used"]:
-                    state["weather"] = await call_tool("weather", self.weather_getter, location, plan_date)
-                    record("weather")
+                state["weather"] = await self.tool_executor.execute(
+                    "weather", self.weather_getter,
+                    {"location": location, "target_date": plan_date},
+                    cache=state["tool_cache"], trace=state["tool_trace"],
+                )
+                record("weather")
                 return json.dumps(state["weather"], ensure_ascii=False, default=str)
             tools.append(read_weather)
 

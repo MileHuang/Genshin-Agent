@@ -7,6 +7,7 @@ from frontend import (
     get_learning_summary,
     parse_preference_value,
     schedule_rows,
+    tool_trace_rows,
 )
 from tools.edit_event import EditAction, EditEventStore
 from tools.feedback_service import FeedbackService
@@ -38,6 +39,9 @@ def test_demo_frontend_generates_valid_display_rows():
     assert rows[0]["Time"] == "08:30 - 10:00"
     assert rows[0]["Item"] == "Focused study session"
     assert plan.tools_used == ["calendar", "todo", "memory", "weather"]
+    trace = tool_trace_rows(plan)
+    assert [row["Tool"] for row in trace] == ["Calendar", "Todo", "Memory", "Weather"]
+    assert all(row["Permission"] == "read" for row in trace)
 
 
 def test_calendar_sync_key_changes_when_plan_schedule_changes():

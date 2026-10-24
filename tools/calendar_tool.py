@@ -5,11 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
+import hashlib
 import json
 from pathlib import Path
 import sys
 from typing import Any, Protocol, TypedDict
 from zoneinfo import ZoneInfo
+
+from tools.calendar_sync_store import build_plan_sync_key
 
 from config.settings import (
     CALENDAR_PROVIDER,
@@ -141,28 +144,66 @@ class GoogleCalendarProvider:
         return [self._to_calendar_event(item, normalised_date) for item in response.get("items", [])]
 
     def create_events(self, target_date: str, items: Sequence[dict[str, str]]) -> list[str]:
-        """Create confirmed plan items in Google Calendar and return event IDs."""
+        """Create confirmed items; retrying the same batch reuses event IDs.
+
+        Google accepts client-supplied IDs and reports duplicates with HTTP 409.
+        See https://developers.google.com/workspace/calendar/api/v3/reference/events/insert
+        """
 
         target_date = _normalise_date(target_date)
         service = self._get_service()
+        batch_key = build_plan_sync_key(target_date, items)
         created_ids: list[str] = []
-        for item in items:
+        for index, item in enumerate(items):
             start_time, end_time = item["start_time"], item["end_time"]
+            identity = json.dumps([self.calendar_id, str(self.timezone), batch_key, index])
+            event_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            body = {
+                "id": event_id,
+                "summary": item["title"],
+                "description": item.get("notes", ""),
+                "start": {"dateTime": f"{target_date}T{start_time}:00", "timeZone": str(self.timezone)},
+                "end": {"dateTime": f"{target_date}T{end_time}:00", "timeZone": str(self.timezone)},
+                "extendedProperties": {"private": {"planner_create_id": event_id}},
+            }
             try:
                 event = service.events().insert(
                     calendarId=self.calendar_id,
                     sendUpdates="none",
-                    body={
-                        "summary": item["title"],
-                        "description": item.get("notes", "Created by Personal Planner."),
-                        "start": {"dateTime": f"{target_date}T{start_time}:00", "timeZone": str(self.timezone)},
-                        "end": {"dateTime": f"{target_date}T{end_time}:00", "timeZone": str(self.timezone)},
-                    },
+                    body=body,
                 ).execute()
             except Exception as exc:
-                raise CalendarOperationError("unable to create Google Calendar events") from exc
+                if getattr(getattr(exc, "resp", None), "status", None) != 409:
+                    raise CalendarOperationError(
+                        "Unable to complete Google Calendar sync. Some items may already exist; "
+                        "retry the unchanged plan to resume without creating them again."
+                    ) from exc
+                try:
+                    event = service.events().get(
+                        calendarId=self.calendar_id, eventId=event_id
+                    ).execute()
+                    if not self._matches_created_event(event, body):
+                        raise ValueError("existing event differs from the confirmed item")
+                except Exception as recovery_exc:
+                    raise CalendarOperationError(
+                        "Existing Google Calendar event could not be verified; sync stopped."
+                    ) from recovery_exc
             created_ids.append(str(event["id"]))
         return created_ids
+
+    def _matches_created_event(self, event: dict[str, Any], body: dict[str, Any]) -> bool:
+        if (event.get("status") == "cancelled"
+                or event.get("id") != body["id"]
+                or event.get("extendedProperties", {}).get("private", {}).get("planner_create_id") != body["id"]
+                or event.get("summary") != body["summary"]
+                or event.get("description", "") != body["description"]):
+            return False
+        for field in ("start", "end"):
+            actual = _parse_google_datetime(event.get(field, {}).get("dateTime"))
+            expected = datetime.fromisoformat(body[field]["dateTime"]).replace(tzinfo=self.timezone)
+            if actual.tzinfo is None or actual != expected:
+                return False
+        return True
 
     def update_event(self, event_id: str, target_date: str, item: dict[str, str]) -> None:
         """Update one previously created Personal Planner event."""

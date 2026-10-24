@@ -36,8 +36,8 @@ User feedback
 
 ## Shared contract
 
-`get_memory_context(user_id, goal)` has three required top-level fields and
-may also return RAG retrieval and Markdown session context:
+`get_memory_context(user_id, goal)` preserves three required top-level fields
+and may add two RAG/session fields:
 
 ```json
 {
@@ -68,8 +68,8 @@ may also return RAG retrieval and Markdown session context:
 
 `relevant_memories` contains source-linked long-term episodic retrieval results.
 `working_memory` contains the latest unexpired Markdown session context and is
-never indexed into long-term RAG. Keene's pending tool-platform branch also
-documents provider fallbacks through a public tool trace.
+never indexed into long-term RAG. Provider failure uses the same required
+contract with empty values and is exposed in the plan's tool trace.
 
 The planner validates this shape before use. Paused preferences remain visible
 but are ignored by deterministic scheduling rules.
