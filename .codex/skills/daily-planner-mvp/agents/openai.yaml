@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daily Planner MVP"
+  short_description: "Build and extend the Phase 1 daily-planning vertical slice"
+  default_prompt: "Use $daily-planner-mvp to implement the next scoped Phase 1 Daily Planner MVP task."

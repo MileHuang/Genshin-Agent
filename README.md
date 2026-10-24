@@ -1,304 +1,381 @@
 # Personal Planner Agent
 
-A personal planning agent that learns from how users organize their daily lives and travel.
+An explainable daily-planning assistant that combines goals, calendar events,
+todo items, weather, and long-term user memory into a validated `DailyPlan`.
 
-The project combines daily scheduling and travel planning through one shared user-preference model. Instead of only remembering what a user says, the system records how the user edits, accepts, deletes, moves, and skips planned activities, then uses that evidence to improve future plans.
+The project demonstrates a complete feedback loop: users can adjust a plan,
+those actions become immutable evidence, repeated behavior becomes a
+confidence-scored preference, and the next plan can apply that preference with
+deterministic safety checks.
 
-## Project Status
+## Current status
 
-This repository is in the initial MVP stage. The first milestone is a small end-to-end daily-planning flow using mock calendar data. Real Google Calendar integration, travel planning, and long-term preference learning will be added incrementally.
+The Phase 1 Daily Planner MVP is runnable through both a CLI and a Streamlit
+web interface. The current implementation includes:
 
-## MVP Goal
+- mock Calendar, Todo, Profile, and Weather data;
+- optional Google Calendar and Todoist reads;
+- an OpenAI Agents SDK planner using Kimi through Moonshot's compatible API;
+- structured `DailyPlan` output and deterministic conflict validation;
+- append-only accept, move, skip, and delete feedback events;
+- three-event behavioral preference learning;
+- a shared `get_memory_context(user_id, goal)` interface;
+- per-user personal RAG for source-linked feedback recall;
+- temporary Markdown session memory that is kept out of long-term retrieval;
+- deterministic preference application and safe schedule reordering;
+- a Memory page for view, edit, pause, resume, forget, and explicit LLM
+  consolidation actions;
+- explicit-confirmation Google Calendar writes and feedback synchronization;
+- fully offline automated tests.
 
-The first working demo should support this flow:
+Travel, Health, LangGraph, multi-agent orchestration, public-place RAG, and
+production deployment persistence are not part of this milestone.
 
-1. A user describes tasks for a day in natural language.
-2. The agent reads existing events from a mock calendar tool.
-3. The agent reads mock user preferences.
-4. The agent generates a structured daily-plan draft.
-5. Deterministic Python validation checks for time conflicts.
-6. The frontend displays the draft for user review.
-7. Later iterations record edits and update long-term preferences.
-
-The first milestone does **not** include automatic booking, payment, multi-agent orchestration, vector databases, or direct writes to a real calendar.
-
-## Core Idea
-
-```text
-User request
-    -> Planner Agent
-    -> Calendar / Memory tools
-    -> Structured plan
-    -> Python validation
-    -> User review and edits
-    -> Edit-event storage
-    -> Preference update
-    -> Better future plans
-```
-
-The LLM is responsible for understanding requests, selecting tools, and explaining plans. Regular Python code is responsible for hard constraints such as time conflicts, durations, validation, and database writes.
-
-## Proposed Architecture
+## End-to-end flow
 
 ```text
-Streamlit frontend
+User goal
         |
         v
-FastAPI backend
+OpenAI Agents SDK ReAct Planner
+  -> decide which read-only tool to call
+  -> Calendar / Todo / Weather / Memory RAG
+  -> observe tool result and continue (maximum 6 turns)
         |
         v
-Personal Planner Agent
-   |         |         |
-   v         v         v
-Calendar   Memory   Scheduling
- tools      tools     validator
-   |         |         |
-   v         v         v
-Google     SQLite    Python rules
-Calendar   database
+deterministic memory rules -> conflict validator -> DailyPlan
+                                                                  |
+                                                                  v
+                                              accept / move / skip / delete
+                                                                  |
+                                                                  v
+                               EditEvent -> preference aggregation + personal RAG
+                                                                  |
+                                                                  v
+                                                      next planning request
 ```
 
-Calendar writes must be treated as side effects. The system should generate a draft first and write to a real calendar only after explicit user confirmation.
+### ReAct planner loop
 
-## Technology Stack
+The production planner is one OpenAI Agents SDK agent with local function
+tools. It must read Calendar and Memory before finalizing a plan, then decides
+whether Todo or Weather is useful for the request. Tool calls are read-only,
+cached within the run, and capped at six SDK turns. The model returns a
+structured plan only after sufficient context is available; local preference
+rules and conflict validation remain the final authority. The offline demo
+uses a deterministic test-double path with the same safety validation.
 
-- Python 3.12
-- OpenAI Agents SDK
-- Pydantic for structured inputs and outputs
-- FastAPI for backend endpoints
-- Streamlit for the initial frontend
-- SQLite for local storage
-- pytest for tests
-- Git and GitHub for collaboration
+## Memory architecture
 
-## Suggested Project Structure
+The current local memory implementation uses explicit layers: structured
+profile data, short-lived working context, raw candidate evidence, verified
+behavioral rules, and promoted long-term retrievable evidence:
+
+1. `FeedbackService` records an immutable `EditEvent`.
+2. `EditEventStore` appends the event to `data/behavior_history.jsonl`.
+3. `PreferenceAggregator` requires three matching events before creating a
+   `BehaviorPreference`.
+4. `RagMemoryContextService` records source-linked feedback as per-user,
+   30-day `candidate` records in local SQLite. Candidates remain auditable but
+   are not eligible for long-term RAG retrieval.
+5. On an explicit Memory-page action, `KimiMemorySummarizer` compresses two or
+   more unprocessed feedback events into one reviewed, factual, source-linked
+   `active` episodic summary. Only promoted summaries are retrievable. With
+   `OPENAI_API_KEY` configured, RAG uses OpenAI `text-embedding-3-small`;
+   otherwise its offline fallback combines token and Chinese character n-gram
+   retrieval. The vector index is derived data and is rebuilt automatically if
+   the embedding provider changes.
+6. `SessionMemoryStore` keeps the current goal and temporary constraints in a
+   readable Markdown file. Session files are never indexed as long-term memory.
+7. `PlannerAgent` receives the shared Memory Context and applies active
+   preferences through deterministic rules before conflict validation.
+
+The shared contract is:
+
+```python
+get_memory_context(user_id: str, goal: str) -> {
+    "profile": dict,
+    "preferences": list,
+    "relevant_events": list,
+    "relevant_memories": list,  # optional, source-linked RAG results
+    "working_memory": dict | None,  # optional temporary Session Markdown
+}
+```
+
+Learned preferences include a stable `memory_id`, confidence, evidence count,
+source event IDs, structured value, and `active` or `paused` status.
+
+### Layered memory lifecycle
+
+The layers have different write paths and different authority. This prevents a
+single temporary request or edit from silently becoming a long-term scheduling
+rule.
+
+| Layer | Stored in | Written when | Read by the planner | Authority |
+| --- | --- | --- | --- | --- |
+| Working | `data/sessions/<user>/<session>.md` | A planning session starts | Latest non-expired session | Current goal and temporary constraints |
+| Candidate | JSONL audit trail and SQLite `candidate` document | Every feedback event | `relevant_events`; never by RAG | Evidence only |
+| Episodic | SQLite `active` document and vector chunks | A user reviews and approves a consolidation | Goal-based RAG retrieval | Context only |
+| Behavioral | Derived from the event stream, with JSON controls | Three matching feedback events | `preferences` | Deterministic soft scheduling rules |
+| Profile | JSON controls and SQLite profile values | Explicit user edit | `profile` | Stable background constraints |
 
 ```text
-AIAgentProject/
-|-- app/
-|   |-- main.py
-|   |-- agent.py
-|   |-- schemas.py
-|   |-- api/
-|   |   `-- routes.py
-|   |-- tools/
-|   |   |-- calendar.py
-|   |   `-- memory.py
-|   |-- planning/
-|   |   `-- validator.py
-|   `-- memory/
-|       `-- preference_updater.py
-|-- frontend/
-|   `-- app.py
-|-- data/
-|-- tests/
-|   |-- test_agent.py
-|   `-- test_validator.py
+current goal + temporary constraints
+    -> working-memory Markdown
+
+plan feedback
+    -> immutable JSONL event
+    -> candidate memory (not retrievable through RAG)
+    -> [user reviews and approves a summary]
+    -> active episodic RAG memory
+
+three matching feedback events
+    -> verified behavioral preference
+    -> deterministic rule, subject to calendar conflicts
+```
+
+An active episodic record can help the model understand relevant past context,
+but cannot change a plan by itself. The precedence order is: fixed calendar
+events and the user’s current request, then working memory, then active
+behavioral preferences, then episodic RAG context. Candidate records are kept
+for traceability and promotion; their SQLite expiry is 30 days, while the raw
+JSONL audit log remains append-only.
+
+### Applied preference rules
+
+- `preferred_time_range`: safely move the matching activity into the preferred
+  range; one flexible conflicting item may be swapped into the original slot.
+- `avoid_time_range`: move the activity to the nearest safe time outside the
+  avoided range.
+- `deprioritize_activity`: lower priority unless the current request explicitly
+  asks for that activity.
+- Fixed calendar events always take priority over learned preferences.
+- Paused or forgotten preferences do not affect planning.
+
+Applied rules are exposed in `DailyPlan.assumptions` for explainability.
+
+### Local persistence
+
+- `data/behavior_history.jsonl`: append-only raw feedback evidence.
+- `data/memory_controls.json`: profile overrides and learned-preference edit,
+  pause, and forget controls.
+- `data/personal_rag.db`: candidate and promoted long-term documents, plus
+  rebuildable local vector chunks. Candidates expire after 30 days and are
+  never returned by RAG.
+- `data/sessions/<user>/<session>.md`: temporary Markdown working memory.
+- `data/google_calendar_syncs.json`: Google Calendar duplicate-write protection.
+
+The entire `data/` directory is ignored by Git. The Memory Context boundary is
+designed so a future SQLite service can replace these local files without
+changing Planner or UI contracts.
+
+See [Long-Term Memory Design](docs/memory-design.md) for details.
+See the [Next-Phase Agent Roadmap](docs/next-phase-roadmap.md) for the planned
+tool platform, reusable skills, public Travel RAG, and Travel Agent work.
+
+## Repository structure
+
+```text
+Genshin-Agent/
+|-- planner_agents/
+|   |-- contracts.py              # stable plan models and text-agent protocol
+|   |-- context.py                # read-only provider contracts and memory loading
+|   |-- prompts.py                # prompts, routing, and model-output parsing
+|   |-- react_runtime.py          # OpenAI Agents SDK ReAct tools and runtime
+|   |-- validation.py             # deterministic memory rules and conflict checks
+|   `-- planner_agent.py          # small backward-compatible planning facade
+|-- memory/
+|   |-- __init__.py
+|   |-- session_memory.py         # short-lived Markdown working memory
+|   |-- models.py                 # strict Pydantic contract prototypes
+|   `-- rag/personal.py           # SQLite documents and local hybrid retrieval
+|-- tools/
+|   |-- calendar_tool.py          # mock and Google Calendar providers
+|   |-- todo_tool.py              # mock and Todoist providers
+|   |-- weather_tool.py           # mock and Open-Meteo providers
+|   |-- validator_tool.py         # deterministic overlap checks
+|   |-- edit_event.py             # immutable events and JSONL store
+|   |-- feedback_service.py       # feedback application service
+|   |-- behavior_preference.py    # runtime learned-preference model
+|   |-- preference_aggregator.py  # three-event aggregation rules
+|   |-- preference_tool.py        # legacy profile/preference adapter
+|   |-- memory_context.py         # shared context and user controls
+|   |-- memory_rules.py           # deterministic planner rules
+|   `-- calendar_sync_store.py
+|-- tests/                        # offline unit and end-to-end coverage
+|-- docs/
+|   |-- memory-design.md
+|   |-- phase-1-task-list.md
+|   `-- development-log.md
+|-- frontend.py                   # Streamlit Planner and Memory pages
+|-- main.py                       # CLI demo and feedback loop
+|-- config/settings.py
 |-- .env.example
-|-- .gitignore
 |-- requirements.txt
 `-- README.md
 ```
 
-The folders above are planned structure and will be created as implementation begins.
+## Requirements
 
-## Local Setup (Windows PowerShell)
+- Python 3.11 or newer
+- Windows PowerShell commands are shown below; equivalent commands work on
+  macOS and Linux.
 
-### 1. Clone the repository
+Core packages include OpenAI Agents SDK, OpenAI Python SDK, Pydantic, HTTPX,
+Streamlit, Google API clients, and pytest.
+
+## Local setup
 
 ```powershell
 git clone https://github.com/MileHuang/Genshin-Agent.git
 cd Genshin-Agent
-```
-
-If the repository already exists locally, open the folder directly in VS Code.
-
-### 2. Create a virtual environment
-
-```powershell
-py -3.12 -m venv .venv
-```
-
-### 3. Activate the environment
-
-```powershell
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-### 4. Install dependencies
-
-After `requirements.txt` is created:
-
-```powershell
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
-
-The initial dependency set is expected to include:
-
-```text
-openai-agents
-fastapi[standard]
-streamlit
-python-dotenv
-pytest
-```
-
-### 5. Configure environment variables
-
-Copy `.env.example` to `.env` and add your own API key:
-
-```powershell
 Copy-Item .env.example .env
 ```
 
+The deterministic demo does not require any API credentials.
+
+For live model use, set at least:
+
 ```env
-OPENAI_API_KEY=replace_with_your_key
+MOONSHOT_API_KEY=replace_with_your_moonshot_api_key
+KIMI_MODEL=kimi-k3
+KIMI_BASE_URL=https://api.moonshot.ai/v1
 ```
 
-Never commit `.env` or API keys to GitHub. Each developer should use their own local credentials.
+Open-Meteo requires no API key. Set `WEATHER_PROVIDER=mock` for fully offline
+development.
 
-## Planned Development Commands
+For semantic Personal RAG, add an OpenAI API key to `.env`:
 
-These commands will work after the corresponding application files are implemented.
+```env
+RAG_EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
 
-Run the backend:
+`RAG_EMBEDDING_PROVIDER=auto` uses OpenAI when the key is configured and the
+offline provider otherwise. Existing memory chunks are rebuilt when the active
+embedding provider or model changes.
+
+For explicit LLM feedback consolidation, configure the Moonshot-compatible
+Kimi endpoint as well:
+
+```env
+MOONSHOT_API_KEY=your_moonshot_api_key
+KIMI_MODEL=kimi-k3
+KIMI_BASE_URL=https://api.moonshot.ai/v1
+```
+
+In the Memory page, choose **Generate Kimi summary preview** after at least two
+new feedback events. Review or edit the proposed summary, then explicitly
+approve it before it reaches long-term RAG. Only those pending feedback records
+are sent for that one summary request; ordinary retrieval does not call Kimi.
+
+Never commit `.env`, API keys, OAuth credentials, tokens, or user memory files.
+
+## Run the CLI
+
+Deterministic offline demo:
 
 ```powershell
-fastapi dev app/main.py
+python main.py --demo
 ```
 
-Run the frontend:
+Demo with interactive feedback for a named user:
 
 ```powershell
-streamlit run frontend/app.py
+python main.py --demo --feedback --user-id member-b
 ```
 
-Run tests:
+Custom goal and date:
 
 ```powershell
-pytest
+python main.py --demo `
+  --user-id member-b `
+  --date 2026-09-03 `
+  --location "Madison, WI" `
+  --goal "Plan study, a gym session, and grocery shopping"
 ```
 
-## Initial Data Contracts
+Omit `--demo` to use the configured Moonshot model.
 
-The first implementation should define these Pydantic models before building the UI or connecting real services:
+## Run the web interface
 
-- `Task`
-- `CalendarEvent`
-- `PlanItem`
-- `DailyPlan`
-- `EditEvent`
-- `UserPreference`
-
-Every layer should share these contracts:
-
-- Tools return structured calendar and preference data.
-- The agent returns a structured plan.
-- The validator checks the same plan structure.
-- The frontend renders the same plan structure.
-- The database stores the plan and subsequent edits.
-
-## Initial Mock Tools
-
-The first agent should use mock implementations of:
-
-- `get_calendar_events(date)`
-- `get_user_preferences(user_id)`
-- `schedule_tasks(tasks, events, preferences)`
-
-Mock tools keep the first milestone independent from Google OAuth and other external-service setup. Real integrations should replace the tool internals later without changing their public input and output contracts.
-
-## Memory Design
-
-The project separates memory into three categories:
-
-1. **Conversation memory**: recent messages needed for a multi-turn interaction.
-2. **Profile memory**: structured, relatively stable preferences such as preferred start time or maximum activities per day.
-3. **Trajectory memory**: raw evidence such as moving, deleting, accepting, or skipping a plan item.
-
-Long-term preferences should not be overwritten after one edit. The preference updater should store evidence count, confidence, and last-updated time, then update a preference only after sufficient evidence.
-
-## First Milestone Acceptance Criteria
-
-The first milestone is complete when:
-
-- [ ] A fixed natural-language request can be submitted.
-- [ ] The agent calls a mock calendar tool.
-- [ ] The agent calls a mock preference tool.
-- [ ] The agent returns a validated `DailyPlan` object.
-- [ ] The validator detects overlapping events.
-- [ ] A valid plan contains no overlaps with existing events.
-- [ ] The plan can be displayed in a terminal or minimal Streamlit page.
-- [ ] Tests cover at least one valid plan and one conflicting plan.
-
-## Roadmap
-
-### Phase 1: Daily-planning vertical slice
-
-- Define data models.
-- Implement mock tools.
-- Create one planner agent.
-- Add deterministic conflict validation.
-- Display a plan draft.
-
-### Phase 2: Editing and memory
-
-- Save plans in SQLite.
-- Record move, delete, accept, and skip events.
-- Implement initial preference-update rules.
-- Use updated preferences in later plans.
-
-### Phase 3: Real calendar integration
-
-- Configure Google Calendar OAuth.
-- Read real calendar events.
-- Require confirmation before calendar writes.
-- Synchronize confirmed plans.
-
-### Phase 4: Travel planning
-
-- Search candidate places and activities.
-- Reuse daily-planning preferences.
-- Validate opening hours, travel time, pace, and breaks.
-- Record travel-plan edits in the same memory system.
-
-## Team Workflow
-
-Use short-lived feature branches and pull requests:
-
-```text
-main
-|-- feature/agent
-|-- feature/scheduler
-`-- feature/frontend
+```powershell
+python -m streamlit run frontend.py
 ```
 
-Recommended workflow:
+Open <http://127.0.0.1:8501>. The sidebar provides:
 
-1. Create a branch from the latest `main`.
-2. Implement one small, testable change.
-3. Commit with a clear message.
-4. Push the branch and open a pull request.
-5. Ask at least one teammate to review it.
-6. Merge only after tests pass.
+- `Planner`: generate, validate, adjust, and optionally sync a daily plan.
+- `Memory`: edit profile values; inspect, edit, pause, resume, or forget learned
+  preferences; view recent evidence; generate a Kimi summary preview; then edit,
+  approve, or discard it before saving to long-term memory.
+- `User ID`: isolate memory by user.
+- `Offline demo mode`: run without a model API key.
 
-Do not commit API keys, OAuth tokens, `.env`, `.venv`, or local database files.
+## Optional integrations
 
-## Definition of Project Success
+### Google Calendar
 
-The project should demonstrate more than plan generation:
+1. Enable the Google Calendar API in a Google Cloud project.
+2. Create a desktop OAuth client.
+3. Save the downloaded JSON as `secrets/google_client_secret.json`.
+4. Enable `Read Google Calendar` in Streamlit or pass `--google-calendar`.
 
-> A user edits a daily plan, the system stores evidence from that edit, and a later daily or travel plan changes in an observable and explainable way because of the learned preference.
+The first use opens a browser for consent. Generated events are written only
+after explicit confirmation. MOVE updates a synced event; DELETE removes it;
+SKIP records feedback only.
 
-## Contributors
+### Todoist
 
-Add team members and responsibilities here:
+Set `TODOIST_API_TOKEN` in `.env`, then enable `Read Todoist tasks` in
+Streamlit or pass `--todoist`. The integration reads open tasks only.
 
-- Team member 1 — Agent and tools
-- Team member 2 — Scheduling, memory, and evaluation
-- Team member 3 — Frontend and integrations
+## Testing
 
-## License
+Run all offline tests:
 
-Add a license if the repository will be made public. For a private course repository, follow the course or institution requirements.
+```powershell
+python -m pytest -q
+```
+
+Important coverage includes:
+
+- provider validation and offline doubles;
+- schedule and fixed-calendar conflict checks;
+- feedback event validation and round trips;
+- three-event preference aggregation;
+- profile and preference management controls;
+- safe deterministic memory rules;
+- SDK ReAct tool selection, required Calendar/Memory reads, and bounded turns;
+- three gym moves affecting the next generated plan;
+- Streamlit helper behavior and Google Calendar synchronization.
+
+## Collaboration rules
+
+- Keep tools in `tools/` and add matching tests.
+- Keep provider output structured and usable by `DailyPlan`.
+- Record actual context sources in `DailyPlan.tools_used`.
+- Treat Calendar as a fixed constraint and Memory as a soft constraint.
+- Keep network-independent test doubles for every external provider.
+- Update this README when implementation or commands change.
+- Use the repository-local `$daily-planner-mvp` Codex skill for scoped work.
+
+## Current limitations
+
+- SQLite-backed personal RAG is local-development persistence, not a
+  production service or shared deployment backend.
+- OpenAI embeddings send long-term memory chunks to the configured OpenAI API;
+  use `RAG_EMBEDDING_PROVIDER=hash` when that is not acceptable.
+- Kimi consolidation sends only the selected pending feedback events to the
+  configured Moonshot API when the user clicks the consolidation action.
+- Forgetting a learned preference suppresses the derived memory but does not
+  rewrite raw append-only events.
+- Preference decay and contradictory-evidence resolution are not implemented.
+- Authentication and authorization for shared deployments are not implemented.
+- The Pydantic models under `memory/` and runtime dataclasses under `tools/`
+  remain separate until the durable MemoryService migration.

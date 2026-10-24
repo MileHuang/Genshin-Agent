@@ -1,0 +1,74 @@
+import asyncio
+import json
+
+from planner_agents.planner_agent import PlannerAgent
+from tools.calendar_tool import get_calendar_events
+from tools.validator_tool import validate_schedule
+
+
+class OfflinePlannerModel:
+    """Deterministic model double; this integration test never uses network."""
+
+    async def run(self, _: str) -> str:
+        return json.dumps(
+            {
+                "summary": "Work around fixed calendar commitments.",
+                "schedule": [
+                    {
+                        "title": "Focused study",
+                        "start_time": "09:00",
+                        "end_time": "10:00",
+                        "priority": "high",
+                        "category": "study",
+                        "notes": "Complete the hardest topic first.",
+                    },
+                    {
+                        "title": "Project work",
+                        "start_time": "10:30",
+                        "end_time": "12:00",
+                        "priority": "high",
+                        "category": "work",
+                        "notes": "Produce one reviewable draft.",
+                    },
+                ],
+                "assumptions": [],
+            }
+        )
+
+
+def test_daily_planner_pipeline_produces_conflict_free_structured_plan():
+    planner = PlannerAgent(OfflinePlannerModel())
+
+    plan = asyncio.run(
+        planner.create_daily_plan(
+            "Study and complete project work",
+            target_date="2026-08-07",
+        )
+    )
+
+    assert plan.validation.is_valid is True
+    assert plan.calendar_events_considered == 2
+    assert [item.title for item in plan.schedule] == [
+        "Focused study",
+        "Project work",
+    ]
+
+
+def test_pipeline_validator_detects_plan_calendar_overlap():
+    events = get_calendar_events("2026-08-07")
+    combined_schedule = [
+        {"task": "Overlapping task", "start_time": "10:15", "end_time": "11:00"},
+        *[
+            {
+                "task": event["title"],
+                "start_time": event["start_time"],
+                "end_time": event["end_time"],
+            }
+            for event in events
+        ],
+    ]
+
+    result = validate_schedule(combined_schedule)
+
+    assert result["is_valid"] is False
+    assert any("Team check-in" in conflict for conflict in result["conflicts"])
