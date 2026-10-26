@@ -35,7 +35,8 @@ from tools.calendar_tool import (
 )
 from tools.calendar_sync_store import CalendarSyncStore, build_plan_sync_key
 from tools.todo_tool import TodoistConfigurationError, TodoistProvider, get_todos
-from tools.edit_event import EditAction, EditEventStore
+from tools.edit_event import EditAction, EditEventStore, FeedbackScope
+from tools.behavior_preference import MIN_SCHEDULING_CONFIDENCE
 from tools.feedback_service import FeedbackService
 from tools.memory_context import (
     DEFAULT_MEMORY_CONTROLS_PATH,
@@ -186,9 +187,15 @@ def apply_schedule_feedback(
     google_calendar: GoogleCalendarProvider | None = None,
     google_event_id: str | None = None,
     user_id: str = "default",
+    scope: FeedbackScope = "unknown",
+    reason: str | None = None,
 ) -> str:
     """Persist one feedback event and update the displayed plan in place."""
 
+    if scope not in {"unknown", "temporary", "persistent"}:
+        raise ValueError("Invalid feedback scope.")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError("Feedback reason must be text.")
     try:
         item = plan.schedule[item_index]
     except IndexError as exc:
@@ -204,6 +211,8 @@ def apply_schedule_feedback(
         "original_end": original_end,
         "source_plan_id": f"daily-plan-{plan.date.isoformat()}",
         "user_id": user_id,
+        "scope": scope,
+        "reason": reason,
     }
 
     if action == "accept":
@@ -287,7 +296,8 @@ def get_learning_summary(
     action_counts = Counter(event.action.value for event in events)
     evidence: dict[tuple[str, str], int] = defaultdict(int)
     for event in events:
-        evidence[(event.activity_type, event.action.value)] += 1
+        if event.scope != "temporary":
+            evidence[(event.activity_type, event.action.value)] += 1
     preferences = PreferenceAggregator(minimum_evidence=minimum_evidence).aggregate(events)
     return {
         "total_events": len(events),
@@ -486,29 +496,44 @@ def render_feedback_controls(
 
     st.markdown("#### Adjust the plan and teach memory")
     st.caption(
-        "Accept, skip, delete, or move an item. Each action becomes "
-        "explainable preference evidence."
+        "Choose whether feedback is a one-off exception, an ongoing change, "
+        "or unspecified. One-off exceptions do not train long-term preferences."
     )
     feedback_service = FeedbackService(EditEventStore(BEHAVIOR_HISTORY_PATH))
 
     for index, item in enumerate(plan.schedule):
         with st.expander(f"{item.start_time}–{item.end_time} · {item.title}"):
+            feedback_key = f"{user_id}-{plan.date}-{item.title}-{item.start_time}-{item.end_time}"
+            scope = st.selectbox(
+                "How should this feedback affect future plans?",
+                options=["unknown", "temporary", "persistent"],
+                format_func=lambda value: {
+                    "unknown": "Unspecified — learn from repeated feedback",
+                    "temporary": "This time only — do not learn a habit",
+                    "persistent": "Ongoing change — update my preference",
+                }[value],
+                key=f"feedback-scope-{feedback_key}",
+            )
+            reason = st.text_input("Reason (optional)", key=f"feedback-reason-{feedback_key}")
             accept_column, skip_column, delete_column = st.columns(3)
             if accept_column.button("Accept", key=f"accept-{index}"):
                 _handle_feedback_action(
                     plan, index, "accept", feedback_service,
+                    scope=scope, reason=reason,
                     sync_google_calendar=sync_google_calendar,
                     user_id=user_id,
                 )
             if skip_column.button("Skip", key=f"skip-{index}"):
                 _handle_feedback_action(
                     plan, index, "skip", feedback_service,
+                    scope=scope, reason=reason,
                     sync_google_calendar=sync_google_calendar,
                     user_id=user_id,
                 )
             if delete_column.button("Delete", key=f"delete-{index}"):
                 _handle_feedback_action(
                     plan, index, "delete", feedback_service,
+                    scope=scope, reason=reason,
                     sync_google_calendar=sync_google_calendar,
                     user_id=user_id,
                 )
@@ -526,6 +551,7 @@ def render_feedback_controls(
                     index,
                     "move",
                     feedback_service,
+                    scope=scope, reason=reason,
                     new_start=new_start,
                     new_end=new_end,
                     sync_google_calendar=sync_google_calendar,
@@ -543,6 +569,8 @@ def _handle_feedback_action(
     new_end: time | None = None,
     sync_google_calendar: bool = False,
     user_id: str = "default",
+    scope: FeedbackScope = "unknown",
+    reason: str | None = None,
 ) -> None:
     if not _plan_is_current(plan, user_id):
         return
@@ -567,6 +595,8 @@ def _handle_feedback_action(
             google_calendar=GoogleCalendarProvider() if event_id else None,
             google_event_id=event_id,
             user_id=user_id,
+            scope=scope,
+            reason=reason,
         )
         if sync_record and action != "accept":
             sync_store.replace(
@@ -596,8 +626,9 @@ def render_learning_dashboard(*, user_id: str = "default") -> None:
 
     with st.expander("What memory has learned", expanded=False):
         st.caption(
-            f"A behavioral preference appears after {required} matching "
-            "feedback events for the same activity."
+            f"Unspecified feedback needs {required} compatible observations. "
+            "An ongoing change updates a preference directly; one-off edits are excluded. "
+            "Scheduling requires confidence of at least 70%."
         )
         metrics = st.columns(5)
         metrics[0].metric("Total feedback", summary["total_events"])
@@ -608,8 +639,7 @@ def render_learning_dashboard(*, user_id: str = "default") -> None:
             {
                 "Activity": activity_type.replace("_", " "),
                 "Feedback": action,
-                "Evidence": count,
-                "Until learned": max(0, required - count),
+                "Non-temporary observations": count,
             }
             for (activity_type, action), count in sorted(summary["evidence"].items())
         ]
@@ -627,10 +657,12 @@ def render_learning_dashboard(*, user_id: str = "default") -> None:
                 attribute = preference["attribute"]
                 value = preference["value"]
                 confidence = float(preference["confidence"])
-                st.success(
+                show = st.success if confidence >= MIN_SCHEDULING_CONFIDENCE else st.warning
+                show(
                     f"{activity} · {attribute} · {value} "
                     f"(confidence {confidence:.0%}, "
                     f"{preference['evidence_count']} evidence events)"
+                    + (" — below scheduling threshold" if confidence < MIN_SCHEDULING_CONFIDENCE else "")
                 )
         else:
             st.caption("Preferences appear here after reaching the evidence threshold.")
@@ -745,8 +777,8 @@ def render_memory_page(
     preferences = context["preferences"]
     if not preferences:
         st.info(
-            "No learned preferences yet. Three matching feedback events are "
-            "required before a preference is created."
+            "No learned preferences yet. Add three compatible unspecified "
+            "observations, or explicitly mark an ongoing change."
         )
     for preference in preferences:
         memory_id = str(preference["memory_id"])
@@ -760,6 +792,8 @@ def render_memory_page(
                 f"Confidence {float(preference['confidence']):.0%}; "
                 f"evidence {preference['evidence_count']}; ID {memory_id}"
             )
+            if float(preference["confidence"]) < MIN_SCHEDULING_CONFIDENCE:
+                st.warning("Conflicting evidence: this preference will not automatically adjust your schedule.")
             with st.form(f"edit-memory-{memory_id}"):
                 raw_value = st.text_area(
                     "Value (JSON)",

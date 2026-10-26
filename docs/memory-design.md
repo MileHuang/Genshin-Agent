@@ -11,7 +11,7 @@ them later.
 | Layer | Contents | Creation | Planner role |
 | --- | --- | --- | --- |
 | Profile | Timezone, wake/sleep times, exercise habit, focus period | Explicit user input | Stable background and soft constraints |
-| Behavioral | Repeated accept, move, skip, or delete patterns | Aggregated after three matching events | Preferred times, avoided times, and deprioritization |
+| Behavioral | Scoped accept, move, skip, or delete patterns | Three compatible unknown events or explicit persistent declaration | Soft scheduling rules at confidence >= 0.70 |
 | Candidate | Goal-relevant raw edit events | Source-linked feedback; retained 30 days | Short-lived evidence; never retrieved by RAG |
 | Episodic | Reviewed LLM-consolidated summaries | Explicit user review and approval | Explainable long-term RAG context |
 | Session | Current goal, temporary constraints, timezone | Session start | Short-term Markdown context; never indexed |
@@ -23,7 +23,7 @@ User feedback
     -> FeedbackService
     -> immutable EditEvent
     -> append-only behavior_history.jsonl
-    -> PreferenceAggregator (minimum three matching events)
+    -> PreferenceAggregator (scope, compatible clusters, recent evidence)
     -> BehaviorPreference with confidence and evidence IDs
     -> expiring candidate memory (not retrievable)
     -> explicit Kimi consolidation (two or more new events)
@@ -71,8 +71,29 @@ and may add two RAG/session fields:
 never indexed into long-term RAG. Provider failure uses the same required
 contract with empty values and is exposed in the plan's tool trace.
 
-The planner validates this shape before use. Paused preferences remain visible
-but are ignored by deterministic scheduling rules.
+The planner validates this shape before use. Paused preferences and preferences
+with confidence below 0.70 remain visible but are ignored by scheduling rules.
+
+## Behavioral evidence updates
+
+Feedback scope defaults to `unknown` for backward compatibility. `temporary`
+events are retained as facts but excluded from habit learning. `persistent`
+events are explicit declarations: the latest such event starts a new evidence
+epoch for that user/activity and can establish a preference on its own.
+
+The current epoch is bounded to 12 non-temporary observations. Time clusters
+have at most 60 minutes of start/end spread and require three observations
+unless they contain a persistent declaration. Observation weights halve every
+two subsequent observations. The highest-weight eligible cluster supplies the
+time interval; its share of all evidence weight is the confidence score.
+Opposing actions and incompatible times therefore reduce confidence instead
+of producing a midpoint between contradictory habits. Identical event IDs are
+counted only once per user. The score is heuristic, not calibrated certainty.
+
+These preferences are still projections over the immutable event log. This
+iteration does not persist superseded versions, perform wall-clock confidence
+decay, or automatically invalidate old episodic summaries. Scope currently has
+no per-weekday conditions or custom validity interval.
 
 ## LLM consolidation guardrails
 
@@ -82,8 +103,8 @@ explicitly generates a Memory-page preview, which sends only pending feedback
 events for that user. They can edit, approve, or discard the proposed summary.
 Only approval promotes an episodic document with every original event ID as a
 source link. It is never
-promoted to a `BehaviorPreference` or a hard rule; only the existing three-event
-deterministic aggregator can make planning rules. Once summarized, raw events
+promoted to a `BehaviorPreference` or a hard rule; the scope-aware deterministic
+aggregator separately derives behavioral rules. Once summarized, raw events
 are omitted from retrieval to avoid duplicate context but remain in the
 append-only JSONL audit trail. Forgetting a preference suppresses both its
 source-linked episodic records and derived LLM summaries from future retrieval.

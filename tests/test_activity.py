@@ -31,6 +31,7 @@ def test_chinese_preference_moves_only_matching_activity():
         {"profile": {}, "preferences": [{
             "activity_type": activity_type("健身"), "attribute": "preferred_time_range",
             "value": {"start": "20:00", "end": "21:00"},
+            "confidence": 0.9,
         }]}, goal="安排健身和读书",
     )
     by_title = {item["title"]: item for item in schedule}
@@ -44,6 +45,7 @@ def test_explicit_chinese_goal_overrides_deprioritization():
         [{"title": "健身", "start_time": "18:00", "end_time": "19:00", "priority": "high"}], [],
         {"profile": {}, "preferences": [{
             "activity_type": "健身", "attribute": "deprioritize_activity", "value": {"level": "low"},
+            "confidence": 0.9,
         }]}, goal="今天一定要健身",
     )
     assert schedule[0]["priority"] == "high"

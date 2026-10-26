@@ -46,7 +46,7 @@ def test_preferences_include_learned_time_preference_from_behavior_history(tmp_p
     assert learned[0]["value"] == {"start": "20:00", "end": "21:00"}
     assert learned[0]["evidence_count"] == 3
     assert len(learned[0]["evidence_event_ids"]) == 3
-    assert learned[0]["confidence"] == 0.76
+    assert learned[0]["confidence"] == 1.0
 
 
 def test_preferences_do_not_mix_users(tmp_path):

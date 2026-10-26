@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from tools.edit_event import EditAction, EditEventStore
 from tools.feedback_service import FeedbackService
 
@@ -45,3 +47,26 @@ def test_accept_delete_and_skip_feedback_are_persisted(tmp_path):
         EditAction.DELETE,
         EditAction.SKIP,
     ]
+
+
+@pytest.mark.parametrize("action", ["accept", "skip", "delete", "move"])
+def test_feedback_scope_and_reason_survive_round_trip(tmp_path, action):
+    store = EditEventStore(tmp_path / "events.jsonl")
+    fields = dict(activity_type="gym", original_start=_time(19),
+                  original_end=_time(20), source_plan_id="plan-1",
+                  scope="temporary", reason="Dinner tonight")
+    if action == "move":
+        fields.update(new_start=_time(8), new_end=_time(9))
+    event = getattr(FeedbackService(store), action)(**fields)
+    assert store.list_events() == [event]
+    assert event.scope == "temporary"
+    assert event.reason == "Dinner tonight"
+
+
+def test_invalid_scope_is_rejected_without_writing_event(tmp_path):
+    store = EditEventStore(tmp_path / "events.jsonl")
+    with pytest.raises(ValueError, match="scope"):
+        FeedbackService(store).accept(activity_type="gym", original_start=_time(19),
+                                     original_end=_time(20), source_plan_id="plan-1",
+                                     scope="forever-ish")
+    assert store.list_events() == []

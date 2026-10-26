@@ -139,6 +139,22 @@ def test_generation_and_feedback_use_new_identity(plan, monkeypatch):
     assert events[0].user_id == "member-b"
 
 
+def test_feedback_ui_persists_scope_and_reason(plan, monkeypatch):
+    monkeypatch.setattr(frontend, "generate_plan", lambda **kwargs: plan)
+    app = AppTest.from_function(_planner_page).run()
+    app.button[0].click().run()
+    app.selectbox[0].select("temporary").run()
+    next(widget for widget in app.text_input if widget.label == "Reason (optional)").set_value(
+        "Exam today only"
+    ).run()
+    next(button for button in app.button if button.label == "Skip").click().run()
+    assert not app.exception
+    events = frontend.EditEventStore(frontend.BEHAVIOR_HISTORY_PATH).list_events()
+    assert len(events) == 1
+    assert events[0].scope == "temporary"
+    assert events[0].reason == "Exam today only"
+
+
 @pytest.mark.parametrize("switch_back", [False, True])
 def test_late_result_cannot_publish_after_identity_switch(plan, monkeypatch, switch_back):
     current_user = ["default"]

@@ -24,7 +24,10 @@ Context rules:
   and goal-relevant events. Active preferences are soft constraints. Prefer
   preferred_time_range, avoid avoid_time_range, and reduce proactive priority
   for deprioritize_activity. The user's current explicit goal always wins.
-- Ignore paused preferences.
+- Ignore non-active preferences and preferences with confidence below 0.70.
+- Temporary feedback describes a one-off exception, not a lasting preference.
+- Persistent feedback explicitly declares a lasting change. Unknown feedback
+  requires repeated evidence; do not infer a habit from one such event.
 - Weather only affects outdoor, travel, commute, or weather-sensitive activity.
 
 Return exactly one JSON object with this structure:

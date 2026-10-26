@@ -103,7 +103,10 @@ class KimiMemorySummarizer:
                         "content": (
                             "Consolidate personal planning feedback into one concise, "
                             "factual episodic-memory summary. Do not invent facts, state "
-                            "a permanent preference, or give planning advice. Return exactly "
+                            "a permanent preference, or give planning advice. "
+                            "Preserve feedback scope: temporary events are one-off exceptions; "
+                            "unknown events do not establish habits. Distinguish explicit "
+                            "persistent declarations from inferred preferences. Return exactly "
                             "JSON with title, summary, and importance from 0 to 1."
                         ),
                     },

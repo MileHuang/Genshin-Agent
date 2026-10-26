@@ -18,7 +18,7 @@ through both a CLI and a Streamlit web interface. The current implementation inc
 - an OpenAI Agents SDK planner using Kimi through Moonshot's compatible API;
 - structured `DailyPlan` output and deterministic conflict validation;
 - append-only accept, move, skip, and delete feedback events;
-- three-event behavioral preference learning;
+- scope-aware preference learning with recent evidence and conflict handling;
 - a shared `get_memory_context(user_id, goal)` interface;
 - per-user personal RAG for source-linked feedback recall;
 - temporary Markdown session memory that is kept out of long-term retrieval;
@@ -85,8 +85,9 @@ behavioral rules, and promoted long-term retrievable evidence:
 
 1. `FeedbackService` records an immutable `EditEvent`.
 2. `EditEventStore` appends the event to `data/behavior_history.jsonl`.
-3. `PreferenceAggregator` requires three matching events before creating a
-   `BehaviorPreference`.
+3. `PreferenceAggregator` excludes temporary exceptions, learns from three
+   compatible unspecified observations, or applies an explicit ongoing change.
+   Recent contradictory evidence lowers the preference's confidence.
 4. `RagMemoryContextService` records source-linked feedback as per-user,
    30-day `candidate` records in local SQLite. Candidates remain auditable but
    are not eligible for long-term RAG retrieval.
@@ -128,7 +129,7 @@ rule.
 | Working | `data/sessions/<user>/<session>.md` | A planning session starts | Latest non-expired session | Current goal and temporary constraints |
 | Candidate | JSONL audit trail and SQLite `candidate` document | Every feedback event | `relevant_events`; never by RAG | Evidence only |
 | Episodic | SQLite `active` document and vector chunks | A user reviews and approves a consolidation | Goal-based RAG retrieval | Context only |
-| Behavioral | Derived from the event stream, with JSON controls | Three matching feedback events | `preferences` | Deterministic soft scheduling rules |
+| Behavioral | Derived from the event stream, with JSON controls | Three compatible observations or explicit ongoing change | `preferences` | Soft rules when confidence is at least 0.70 |
 | Profile | JSON controls and SQLite profile values | Explicit user edit | `profile` | Stable background constraints |
 
 ```text
@@ -141,7 +142,7 @@ plan feedback
     -> [user reviews and approves a summary]
     -> active episodic RAG memory
 
-three matching feedback events
+three compatible unspecified events / explicit ongoing change
     -> verified behavioral preference
     -> deterministic rule, subject to calendar conflicts
 ```
@@ -163,6 +164,33 @@ JSONL audit log remains append-only.
   asks for that activity.
 - Fixed calendar events always take priority over learned preferences.
 - Paused or forgotten preferences do not affect planning.
+- Preferences below 0.70 confidence do not trigger automatic schedule changes.
+
+### Temporary exceptions and changing habits
+
+Each feedback event has a `scope`: `temporary`, `persistent`, or `unknown`.
+The Streamlit feedback controls collect scope and an optional reason. Existing
+JSONL records without scope load as `unknown`; CLI feedback defaults to this
+scope as well. Temporary events remain in the audit trail and episodic context
+but do not contribute to behavioral learning. A persistent event explicitly
+declares an ongoing change for that activity and starts a new evidence epoch;
+it does not need three repeated observations. Scope currently applies to the
+whole activity, without weekday-specific conditions or a custom expiry.
+
+For unspecified feedback, the aggregator considers the latest 12 non-temporary
+observations per user/activity. Compatible time intervals are clustered with a
+maximum 60-minute spread in both start and end times, so morning and evening
+habits cannot be averaged into an unsupported afternoon preference. A cluster
+requires three observations. Evidence weights halve every two subsequent
+observations, allowing a new pattern to outweigh an older one.
+
+Confidence is the winning cluster's weighted support divided by the total
+evidence weight, including opposing actions and incompatible times. It is a
+heuristic score, not a calibrated probability. Scores below 0.70 remain visible
+for review but are ignored by the planner prompt and deterministic rules.
+This is observation-based adaptation; wall-clock decay, persistent preference
+version history, and automatic retirement of stale RAG summaries are future
+work.
 
 Applied rules are exposed in `DailyPlan.assumptions` for explainability.
 

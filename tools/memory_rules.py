@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from tools.activity import mentions_activity
+from tools.behavior_preference import MIN_SCHEDULING_CONFIDENCE
 
 
 def apply_memory_rules(
@@ -33,7 +34,11 @@ def apply_memory_rules(
         return planned, explanations
 
     for preference in preferences:
-        if not isinstance(preference, dict) or preference.get("status") == "paused":
+        if not isinstance(preference, dict) or preference.get("status", "active") != "active":
+            continue
+        confidence = preference.get("confidence")
+        if (isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+                or not MIN_SCHEDULING_CONFIDENCE <= confidence <= 1.0):
             continue
         activity_type = str(preference.get("activity_type", "")).strip()
         attribute = preference.get("attribute")

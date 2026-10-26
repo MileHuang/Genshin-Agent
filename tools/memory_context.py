@@ -560,6 +560,9 @@ class RagMemoryContextService:
                 )
             if event.reason:
                 content += f" User reason: {event.reason}."
+            content += f" Feedback scope: {event.scope}."
+            if event.scope == "temporary":
+                content += " This is a one-off exception, not a lasting preference."
             self.rag_store.upsert(
                 MemoryDocument(
                     memory_id=f"edit-event:{event.event_id}",

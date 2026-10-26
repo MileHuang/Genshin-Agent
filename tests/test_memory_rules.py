@@ -1,5 +1,7 @@
 from tools.memory_rules import apply_memory_rules
 
+import pytest
+
 
 def _gym_preference(*, status="active", attribute="preferred_time_range"):
     return {
@@ -18,6 +20,16 @@ def _context(preference):
         "preferences": [preference],
         "relevant_events": [],
     }
+
+
+@pytest.mark.parametrize("confidence", [0.69, None, "0.9", float("nan"), True, 1.1])
+def test_low_or_invalid_confidence_never_changes_schedule(confidence):
+    preference = _gym_preference()
+    preference["confidence"] = confidence
+    original = [{"title": "Gym", "start_time": "18:00", "end_time": "19:00"}]
+    schedule, explanations = apply_memory_rules(original, [], _context(preference), goal="Gym")
+    assert schedule == original
+    assert explanations == []
 
 
 def test_preferred_time_moves_activity_into_free_slot():

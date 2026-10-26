@@ -8,6 +8,9 @@ from typing import Any
 from uuid import uuid4
 
 
+MIN_SCHEDULING_CONFIDENCE = 0.70
+
+
 @dataclass(frozen=True)
 class BehaviorPreference:
     """One behavioral preference that the planner can consume directly.

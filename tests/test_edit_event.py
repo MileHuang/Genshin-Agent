@@ -33,6 +33,14 @@ def test_move_event_round_trips_through_store(tmp_path):
     assert saved_events[0].event_id == event.event_id
 
 
+def test_legacy_event_without_scope_loads_as_unknown():
+    event = EditEvent(action="ACCEPT", activity_type="gym", original_start=_time(19),
+                     original_end=_time(20), source_plan_id="legacy")
+    legacy = event.to_dict()
+    legacy.pop("scope")
+    assert EditEvent.from_dict(legacy).scope == "unknown"
+
+
 def test_edit_event_is_immutable_and_requires_timezone():
     event = EditEvent(
         action="ACCEPT",

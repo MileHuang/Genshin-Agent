@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from tools.edit_event import EditAction, EditEvent, EditEventStore
+from tools.edit_event import EditAction, EditEvent, EditEventStore, FeedbackScope
 
 
 class FeedbackService:
@@ -26,6 +26,7 @@ class FeedbackService:
         source_plan_id: str,
         user_id: str = "default",
         reason: str | None = None,
+        scope: FeedbackScope = "unknown",
     ) -> EditEvent:
         return self._record(
             action=EditAction.ACCEPT,
@@ -35,6 +36,7 @@ class FeedbackService:
             source_plan_id=source_plan_id,
             user_id=user_id,
             reason=reason,
+            scope=scope,
         )
 
     def move(
@@ -48,6 +50,7 @@ class FeedbackService:
         source_plan_id: str,
         user_id: str = "default",
         reason: str | None = None,
+        scope: FeedbackScope = "unknown",
     ) -> EditEvent:
         return self._record(
             action=EditAction.MOVE,
@@ -59,6 +62,7 @@ class FeedbackService:
             source_plan_id=source_plan_id,
             user_id=user_id,
             reason=reason,
+            scope=scope,
         )
 
     def delete(
@@ -70,6 +74,7 @@ class FeedbackService:
         source_plan_id: str,
         user_id: str = "default",
         reason: str | None = None,
+        scope: FeedbackScope = "unknown",
     ) -> EditEvent:
         return self._record(
             action=EditAction.DELETE,
@@ -79,6 +84,7 @@ class FeedbackService:
             source_plan_id=source_plan_id,
             user_id=user_id,
             reason=reason,
+            scope=scope,
         )
 
     def skip(
@@ -90,6 +96,7 @@ class FeedbackService:
         source_plan_id: str,
         user_id: str = "default",
         reason: str | None = None,
+        scope: FeedbackScope = "unknown",
     ) -> EditEvent:
         return self._record(
             action=EditAction.SKIP,
@@ -99,6 +106,7 @@ class FeedbackService:
             source_plan_id=source_plan_id,
             user_id=user_id,
             reason=reason,
+            scope=scope,
         )
 
     def _record(
@@ -113,6 +121,7 @@ class FeedbackService:
         new_start: datetime | None = None,
         new_end: datetime | None = None,
         reason: str | None = None,
+        scope: FeedbackScope = "unknown",
     ) -> EditEvent:
         event = EditEvent(
             action=action,
@@ -124,6 +133,7 @@ class FeedbackService:
             source_plan_id=source_plan_id,
             user_id=user_id,
             reason=reason,
+            scope=scope,
         )
         self.event_store.append(event)
         return event

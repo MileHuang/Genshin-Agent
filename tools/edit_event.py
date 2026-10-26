@@ -11,8 +11,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
+
+
+FeedbackScope = Literal["unknown", "temporary", "persistent"]
 
 
 class EditAction(str, Enum):
@@ -43,8 +46,11 @@ class EditEvent:
     reason: str | None = None
     event_id: str = field(default_factory=lambda: str(uuid4()))
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    scope: FeedbackScope = "unknown"
 
     def __post_init__(self) -> None:
+        if self.scope not in {"unknown", "temporary", "persistent"}:
+            raise ValueError("scope must be unknown, temporary, or persistent")
         object.__setattr__(self, "action", EditAction(self.action))
         object.__setattr__(
             self, "activity_type", _required_text("activity_type", self.activity_type)
