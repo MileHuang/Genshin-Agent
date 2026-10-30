@@ -188,9 +188,36 @@ Confidence is the winning cluster's weighted support divided by the total
 evidence weight, including opposing actions and incompatible times. It is a
 heuristic score, not a calibrated probability. Scores below 0.70 remain visible
 for review but are ignored by the planner prompt and deterministic rules.
-This is observation-based adaptation; wall-clock decay, persistent preference
-version history, and automatic retirement of stale RAG summaries are future
-work.
+This is observation-based adaptation; wall-clock confidence decay remains
+future work.
+
+### Preference versions and summary review
+
+The RAG memory service persists observed preference snapshots in SQLite
+`preference_versions`. Value, confidence, supporting evidence, or control-state
+changes create a new version; unchanged reads do not. Each version records its
+sources, observation interval, and the version it replaces. Older versions are
+`superseded`; a preference that disappears from the evidence projection becomes
+`expired`, and an explicit forget records a `forgotten` version. Historical
+versions are inspectable on the Memory page and never enter the planner context.
+The first run records a current baseline, rather than reconstructing an
+unobserved history of past decisions.
+
+When a preference changes value or stops being active, related summaries are
+identified through source-event activity IDs and marked `review_required`.
+They leave RAG immediately. This is a conservative review signal, not an LLM
+claim that the historical facts are false. On the Memory page, choose **Keep as
+historical context** to restore retrieval or **Archive summary** to mark it
+`superseded`. Decisions are logged in `summary_reviews`; stale forms are rejected
+if another preference change occurred. Explicit document expiry removes a
+record from retrieval and its vector index while retaining canonical text.
+Reviewed summaries have no automatic TTL unless an expiry is supplied.
+
+Candidate and inactive records have no vector chunks. Only active documents
+are embedded on write, promotion, resume, or index rebuild. Raw feedback older
+than 30 days is excluded from planner event context and consolidation previews;
+expired previews cannot be saved. The JSONL audit trail remains intact, and
+its older evidence can still support the behavioral preference projection.
 
 Applied rules are exposed in `DailyPlan.assumptions` for explainability.
 
@@ -199,9 +226,11 @@ Applied rules are exposed in `DailyPlan.assumptions` for explainability.
 - `data/behavior_history.jsonl`: append-only raw feedback evidence.
 - `data/memory_controls.json`: profile overrides and learned-preference edit,
   pause, and forget controls.
-- `data/personal_rag.db`: candidate and promoted long-term documents, plus
-  rebuildable local vector chunks. Candidates expire after 30 days and are
-  never returned by RAG.
+- `data/personal_rag.db`: candidate and promoted documents, active-only vector
+  chunks, preference versions, and summary review decisions. Candidates expire
+  after 30 days and are never returned by RAG. Existing databases are upgraded
+  with additive tables/columns; inactive vectors are removed and active indexes
+  are rebuilt when their index policy/provider changes.
 - `data/sessions/<user>/<session>.md`: temporary Markdown working memory.
 - `data/google_calendar_syncs.json`: Google Calendar duplicate-write protection.
 
@@ -226,6 +255,7 @@ Genshin-Agent/
 |   |-- validation.py             # deterministic memory rules and conflict checks
 |   `-- planner_agent.py          # small backward-compatible planning facade
 |-- memory/
+|   |-- lifecycle.py              # durable preference versions and summary review signals
 |   |-- __init__.py
 |   |-- session_memory.py         # short-lived Markdown working memory
 |   |-- models.py                 # strict Pydantic contract prototypes
@@ -440,7 +470,9 @@ Important coverage includes:
   configured Moonshot API when the user clicks the consolidation action.
 - Forgetting a learned preference suppresses the derived memory but does not
   rewrite raw append-only events.
-- Preference decay and contradictory-evidence resolution are not implemented.
+- Preference adaptation uses bounded recent observations, not wall-clock decay.
+  Summary review uses source/activity links, not semantic contradiction detection.
+  Version history records observed snapshots rather than replaying every event.
 - Authentication and authorization for shared deployments are not implemented.
 - The Pydantic models under `memory/` and runtime dataclasses under `tools/`
   remain separate until the durable MemoryService migration.

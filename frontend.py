@@ -702,6 +702,59 @@ def render_memory_page(
     )
 
     if isinstance(service, RagMemoryContextService):
+        st.subheader("Preference history")
+        versions = service.get_preference_history(user_id)
+        if versions:
+            st.dataframe([
+                {
+                    "Activity": version["snapshot"]["activity_type"],
+                    "Attribute": version["snapshot"]["attribute"],
+                    "Version": version["version"],
+                    "Value": json.dumps(version["snapshot"]["value"], ensure_ascii=False),
+                    "Status": version["status"],
+                    "Confidence": version["snapshot"]["confidence"],
+                    "Evidence": ", ".join(version["snapshot"]["evidence_event_ids"]),
+                    "Observed from": version["valid_from"],
+                    "Observed until": version["valid_to"],
+                    "Replaces": version["replaces"],
+                } for version in versions
+            ], use_container_width=True, hide_index=True)
+        else:
+            st.caption("Preference changes will appear here as they are observed.")
+
+        st.subheader("Long-term summary review")
+        summaries = service.list_long_term_summaries(user_id)
+        st.caption(
+            "Summaries linked to changed preferences leave retrieval until reviewed. "
+            "Keep historical context or archive it; archived and expired records remain inspectable."
+        )
+        for summary in summaries:
+            with st.expander(f"{summary['title']} ({summary['status']})"):
+                st.write(summary["content"])
+                st.caption("Sources: " + ", ".join(summary["source_ids"]))
+                if summary["status"] == "review_required":
+                    st.warning(summary["review_reason"])
+                    with st.form(f"review-{user_id}-{summary['memory_id']}"):
+                        keep = st.form_submit_button("Keep as historical context")
+                        archive = st.form_submit_button("Archive summary")
+                    token_key = f"review-token-{user_id}-{summary['memory_id']}"
+                    displayed_token = st.session_state.get(token_key, summary["review_token"])
+                    if keep or archive:
+                        try:
+                            service.review_long_term_summary(
+                                user_id, summary["memory_id"], "keep" if keep else "archive",
+                                expected_review_token=displayed_token,
+                            )
+                        except (KeyError, ValueError) as exc:
+                            st.error(str(exc))
+                            st.session_state[token_key] = summary["review_token"]
+                        else:
+                            st.rerun()
+                    else:
+                        st.session_state[token_key] = summary["review_token"]
+        if not summaries:
+            st.caption("No reviewed long-term summaries yet.")
+
         st.subheader("LLM memory summaries")
         st.caption(
             "Summarize two or more unprocessed feedback events with Kimi. "

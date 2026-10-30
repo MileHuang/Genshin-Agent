@@ -28,6 +28,8 @@ Context rules:
 - Temporary feedback describes a one-off exception, not a lasting preference.
 - Persistent feedback explicitly declares a lasting change. Unknown feedback
   requires repeated evidence; do not infer a habit from one such event.
+- Episodic summaries are dated historical context. Current verified preferences
+  and the current explicit goal take precedence over historical habits.
 - Weather only affects outdoor, travel, commute, or weather-sensitive activity.
 
 Return exactly one JSON object with this structure:

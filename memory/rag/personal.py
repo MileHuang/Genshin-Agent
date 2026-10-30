@@ -23,7 +23,10 @@ from uuid import uuid4
 
 DEFAULT_RAG_DATABASE_PATH = Path(__file__).resolve().parents[2] / "data" / "personal_rag.db"
 MemoryType = Literal["episode", "preference", "goal", "fact"]
-MemoryStatus = Literal["candidate", "active", "paused", "forgotten"]
+MemoryStatus = Literal[
+    "candidate", "active", "paused", "forgotten", "superseded", "expired", "review_required"
+]
+MEMORY_STATUSES = {"candidate", "active", "paused", "forgotten", "superseded", "expired", "review_required"}
 
 
 class EmbeddingProvider(Protocol):
@@ -161,7 +164,7 @@ class MemoryDocument:
         _required_text("content", self.content)
         if self.memory_type not in {"episode", "preference", "goal", "fact"}:
             raise ValueError("unsupported memory_type")
-        if self.status not in {"candidate", "active", "paused", "forgotten"}:
+        if self.status not in MEMORY_STATUSES:
             raise ValueError("unsupported memory status")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
@@ -294,6 +297,9 @@ class PersonalRagStore:
                     _utc_now(),
                 ),
             )
+            if document.status != "active":
+                connection.execute("DELETE FROM memory_chunks WHERE memory_id = ?", (document.memory_id,))
+                return
             if existing is not None and str(existing["checksum"]) == checksum:
                 return
             connection.execute("DELETE FROM memory_chunks WHERE memory_id = ?", (document.memory_id,))
@@ -315,18 +321,95 @@ class PersonalRagStore:
     def set_status(self, user_id: str, memory_id: str, status: MemoryStatus) -> None:
         clean_user_id = _required_text("user_id", user_id)
         clean_memory_id = _required_text("memory_id", memory_id)
-        if status not in {"candidate", "active", "paused", "forgotten"}:
+        if status not in MEMORY_STATUSES:
             raise ValueError("unsupported memory status")
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM memory_documents WHERE memory_id = ? AND user_id = ?",
+                (clean_memory_id, clean_user_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("unknown memory")
+            self._change_status(connection, row, status)
+
+    def _change_status(self, connection: sqlite3.Connection, row: sqlite3.Row,
+                       status: MemoryStatus) -> None:
+        """Update status and derived chunks in the caller's transaction."""
+        connection.execute("DELETE FROM memory_chunks WHERE memory_id = ?", (row["memory_id"],))
+        if status == "active":
+            for position, content in enumerate(_chunk_text(str(row["content"]))):
+                connection.execute(
+                    "INSERT INTO memory_chunks VALUES (?, ?, ?, ?, ?)",
+                    (f"{row['memory_id']}:{position}", row["memory_id"], position,
+                     content, json.dumps(self.embedder.embed(content))),
+                )
+        # Force a later upsert to reconsider the vector index after a transition.
+        connection.execute(
+            "UPDATE memory_documents SET status = ?, checksum = '', updated_at = ? WHERE memory_id = ?",
+            (status, _utc_now(), row["memory_id"]),
+        )
+
+    def expire_documents(self, user_id: str, *, now: datetime | None = None) -> int:
+        clean_user_id = _required_text("user_id", user_id)
+        timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with self._connect() as connection:
             result = connection.execute(
-                """
-                UPDATE memory_documents SET status = ?, updated_at = ?
-                WHERE memory_id = ? AND user_id = ?
-                """,
-                (status, _utc_now(), clean_memory_id, clean_user_id),
+                """UPDATE memory_documents SET status = 'expired', checksum = '', updated_at = ?
+                   WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?
+                   AND status IN ('candidate', 'active', 'paused', 'review_required')""",
+                (timestamp, clean_user_id, timestamp),
             )
-        if result.rowcount != 1:
-            raise KeyError("unknown memory")
+            connection.execute(
+                """DELETE FROM memory_chunks WHERE memory_id IN (
+                   SELECT memory_id FROM memory_documents WHERE user_id = ? AND status != 'active')""",
+                (clean_user_id,),
+            )
+        return result.rowcount
+
+    def list_documents(self, user_id: str, *, summaries_only: bool = False) -> list[dict]:
+        clean_user_id = _required_text("user_id", user_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_documents WHERE user_id = ? ORDER BY occurred_at DESC, memory_id",
+                (clean_user_id,),
+            ).fetchall()
+        documents = []
+        for row in rows:
+            document = dict(row)
+            for name in ("source_ids", "tags"):
+                document[name] = json.loads(document[name])
+            if not summaries_only or "llm-summary" in document["tags"]:
+                documents.append(document)
+        return documents
+
+    def review_summary(self, user_id: str, memory_id: str, decision: Literal["keep", "archive"],
+                       *, expected_review_token: str) -> None:
+        """Resolve one queued review atomically; stale forms cannot restore a memory."""
+        if decision not in {"keep", "archive"}:
+            raise ValueError("decision must be keep or archive")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM memory_documents WHERE user_id = ? AND memory_id = ?",
+                (_required_text("user_id", user_id), _required_text("memory_id", memory_id)),
+            ).fetchone()
+            if row is None:
+                raise KeyError("unknown summary")
+            if (row["status"] != "review_required" or row["review_token"] != expected_review_token
+                    or "llm-summary" not in json.loads(row["tags"])):
+                raise ValueError("The summary changed; reload before reviewing.")
+            if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+                raise ValueError("Expired summaries cannot be restored through review.")
+            self._change_status(connection, row, "active" if decision == "keep" else "superseded")
+            connection.execute(
+                "INSERT INTO summary_reviews (user_id, memory_id, decision, reason, reviewed_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, memory_id, decision, row["review_reason"], _utc_now()),
+            )
+            connection.execute(
+                "UPDATE memory_documents SET review_reason = NULL, review_token = NULL WHERE memory_id = ?",
+                (memory_id,),
+            )
 
     def forget(self, user_id: str, memory_id: str) -> None:
         """Delete the canonical document and every derived vector chunk."""
@@ -394,6 +477,15 @@ class PersonalRagStore:
                     """,
                     (clean_user_id, source_id, _utc_now()),
                 )
+                connection.execute(
+                    """UPDATE memory_documents SET status = 'superseded', checksum = '', updated_at = ?
+                       WHERE user_id = ? AND memory_id = ?""",
+                    (_utc_now(), clean_user_id, f"edit-event:{source_id}"),
+                )
+                connection.execute(
+                    "DELETE FROM memory_chunks WHERE memory_id IN (SELECT memory_id FROM memory_documents WHERE user_id = ? AND memory_id = ?)",
+                    (clean_user_id, f"edit-event:{source_id}"),
+                )
 
     def is_source_consolidated(self, user_id: str, source_id: str) -> bool:
         clean_user_id = _required_text("user_id", user_id)
@@ -412,7 +504,7 @@ class PersonalRagStore:
         """Recreate every derived vector chunk from canonical documents."""
 
         clean_user_id = _required_text("user_id", user_id) if user_id is not None else None
-        clause = "WHERE user_id = ?" if clean_user_id else ""
+        clause = "WHERE status = 'active'" + (" AND user_id = ?" if clean_user_id else "")
         parameters: tuple[str, ...] = (clean_user_id,) if clean_user_id else ()
         with self._connect() as connection:
             documents = connection.execute(
@@ -488,6 +580,8 @@ class PersonalRagStore:
                 parameters,
             ).fetchall()
 
+        if not rows:
+            return []
         query_vector = self.embedder.embed(clean_query)
         query_tokens = set(_tokens(clean_query))
         ranked: list[tuple[float, sqlite3.Row]] = []
@@ -584,7 +678,35 @@ class PersonalRagStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS summary_reviews (
+                    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    memory_id TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    reason TEXT,
+                    reviewed_at TEXT NOT NULL
+                );
                 """
+            )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(memory_documents)")}
+            for column in ("review_reason", "review_token"):
+                if column not in columns:
+                    connection.execute(f"ALTER TABLE memory_documents ADD COLUMN {column} TEXT")
+            connection.execute(
+                """UPDATE memory_documents SET status = 'expired', checksum = ''
+                   WHERE expires_at IS NOT NULL AND expires_at <= ?
+                   AND status IN ('candidate', 'active', 'paused', 'review_required')""",
+                (_utc_now(),),
+            )
+            # Migrate legacy automatically indexed raw feedback without touching
+            # canonical text or the append-only JSONL evidence.
+            connection.execute(
+                """UPDATE memory_documents SET status = 'candidate', checksum = ''
+                   WHERE memory_id LIKE 'edit-event:%' AND status = 'active'"""
+            )
+            connection.execute(
+                """DELETE FROM memory_chunks WHERE memory_id IN (
+                   SELECT memory_id FROM memory_documents WHERE status != 'active')"""
             )
 
     def _ensure_embedding_index(self) -> None:
@@ -614,7 +736,7 @@ class PersonalRagStore:
             )
 
     def _embedding_signature(self) -> str:
-        return str(
+        return "active-only-v2:" + str(
             getattr(
                 self.embedder,
                 "signature",

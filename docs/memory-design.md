@@ -90,10 +90,46 @@ Opposing actions and incompatible times therefore reduce confidence instead
 of producing a midpoint between contradictory habits. Identical event IDs are
 counted only once per user. The score is heuristic, not calibrated certainty.
 
-These preferences are still projections over the immutable event log. This
-iteration does not persist superseded versions, perform wall-clock confidence
-decay, or automatically invalidate old episodic summaries. Scope currently has
-no per-weekday conditions or custom validity interval.
+Preferences remain projections over the immutable event log. The RAG service
+now persists observed revisions; wall-clock confidence decay remains deferred.
+Scope currently has no per-weekday conditions or custom validity interval.
+
+## Durable lifecycle
+
+`memory/lifecycle.py` stores normalized snapshots in `preference_versions` in
+the personal RAG database. Each row has a version ID, per-preference version
+number, value, confidence, source events, observed validity interval, and
+replacement link. Changes close the previous interval as `superseded` and
+append a new version. Identical reads do not create revisions. A missing
+projection is `expired`; an explicit forget is `forgotten`. Low-confidence
+versions are `candidate`. The planner continues to receive only the current
+preference projection, never historical versions. Initial startup records a
+baseline; it does not infer unobserved revisions from old event history.
+
+Related episodic summaries are queued as `review_required` when a preference
+changes value or becomes non-active. Association is based on source event IDs
+and activity, so unrelated activities/users are not affected. On bootstrap,
+only older summaries with disjoint evidence are flagged. This mechanism is a
+conservative review trigger, not semantic contradiction detection.
+
+Queued summaries have no vectors and cannot be retrieved. A user can keep the
+summary as dated historical context, regenerating its vectors, or archive it as
+`superseded`. Review decisions are logged in `summary_reviews`. An opaque review
+token ties approval to the displayed change, preventing stale forms from
+restoring a summary after a newer preference change. Embedding failures roll
+back status transitions. The Memory page displays versions and summary states.
+
+Documents with an explicit expiry become `expired` during context loading;
+canonical text remains inspectable, while derived vectors are removed. New
+summaries do not receive an automatic TTL. Candidate expiry is 30 days, checked
+both for planner event context and for consolidation preview/confirmation.
+The append-only audit log remains available for traceability and behavioral
+aggregation; the TTL does not delete raw events or automatically expire habits.
+
+Only active documents receive vector chunks on write, promotion, resume, or
+index rebuild. Additive schema upgrades preserve existing canonical records.
+Legacy raw feedback is demoted to candidate and inactive vector chunks are
+removed. Index policy changes trigger rebuilding active records only.
 
 ## LLM consolidation guardrails
 
@@ -133,6 +169,7 @@ The Streamlit Memory page supports:
 - pausing or resuming a preference;
 - forgetting a learned preference;
 - inspecting recent feedback evidence.
+- inspecting preference versions and reviewing or archiving stale summaries.
 
 Profile edits and learned-memory controls are stored in
 `data/memory_controls.json`. Forgetting a derived preference adds a suppression
@@ -148,8 +185,8 @@ marker; it does not rewrite the append-only raw event history.
 
 ## Deferred production work
 
-- SQLite migrations and durable service implementation
+- Production-grade migrations and shared durable service implementation
 - authentication and authorization for multi-user memory
 - retention, export, and raw-event deletion policy
-- contradictory-evidence handling and preference decay
+- semantic contradiction detection and wall-clock preference decay
 - audit history for profile and control changes

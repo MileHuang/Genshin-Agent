@@ -21,12 +21,14 @@ from memory.rag import (
     ConsolidatedMemory,
     ConsolidationPreview,
     KimiMemorySummarizer,
+    MemoryConsolidationError,
     MemoryDocument,
     MemorySummarizer,
     PersonalRagStore,
     configured_embedding_provider,
 )
 from memory.session_memory import SessionMemoryStore
+from memory.lifecycle import PreferenceHistoryStore
 from tools.behavior_preference import BehaviorPreference
 from tools.edit_event import EditEvent, EditEventStore
 from tools.preference_aggregator import PreferenceAggregator
@@ -175,6 +177,7 @@ class LocalMemoryContextService:
         control_store: MemoryControlStore | None = None,
         aggregator: PreferenceAggregator | None = None,
         profile_factory: Callable[[], dict[str, Any]] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.event_store = event_store or EditEventStore(
             DEFAULT_BEHAVIOR_HISTORY_PATH
@@ -184,6 +187,7 @@ class LocalMemoryContextService:
         )
         self.aggregator = aggregator or PreferenceAggregator()
         self.profile_factory = profile_factory or (lambda: deepcopy(DEFAULT_PROFILE))
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def get_memory_context(self, user_id: str, goal: str) -> MemoryContext:
         clean_user_id = _required_text("user_id", user_id)
@@ -211,7 +215,7 @@ class LocalMemoryContextService:
             "profile": profile,
             "preferences": projected_preferences,
             "relevant_events": [
-                event.to_dict() for event in _relevant_events(events, goal)
+                event.to_dict() for event in _relevant_events(events, goal, now=self.clock())
             ],
         }
 
@@ -317,6 +321,7 @@ class RagMemoryContextService:
         rag_store: PersonalRagStore | None = None,
         session_store: SessionMemoryStore | None = None,
         summarizer: MemorySummarizer | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.base_service = base_service or LocalMemoryContextService()
         self.rag_store = rag_store or PersonalRagStore(
@@ -324,6 +329,8 @@ class RagMemoryContextService:
         )
         self.session_store = session_store or SessionMemoryStore()
         self.summarizer = summarizer
+        self.clock = clock or self.base_service.clock
+        self.history_store = PreferenceHistoryStore(self.rag_store.path)
 
     def get_memory_context(self, user_id: str, goal: str) -> MemoryContext:
         clean_user_id = _required_text("user_id", user_id)
@@ -331,11 +338,20 @@ class RagMemoryContextService:
             raise ValueError("goal must be a string")
 
         self._sync_feedback_events(clean_user_id)
+        self.rag_store.expire_documents(clean_user_id, now=self.clock())
         base_context = self.base_service.get_memory_context(clean_user_id, goal)
+        events = self.base_service.event_store.list_events(user_id=clean_user_id)
+        controls = self.base_service.control_store.user_state(clean_user_id).get("preferences", {})
+        self.history_store.sync(
+            clean_user_id, base_context["preferences"], now=self.clock(),
+            source_activities={event.event_id: event.activity_type for event in events},
+            forgotten_ids={key for key, value in controls.items() if isinstance(value, dict) and value.get("forgotten")}
+            if isinstance(controls, dict) else set(),
+        )
         profile = deepcopy(base_context["profile"])
         profile.update(self.rag_store.get_profile(clean_user_id))
         session = self.session_store.load_latest_active(clean_user_id)
-        memories = self.rag_store.retrieve(clean_user_id, goal, limit=6) if goal.strip() else []
+        memories = self.rag_store.retrieve(clean_user_id, goal, limit=6, now=self.clock()) if goal.strip() else []
 
         return {
             "profile": profile,
@@ -349,6 +365,7 @@ class RagMemoryContextService:
                 and not self.rag_store.is_source_consolidated(
                     clean_user_id, str(event["event_id"])
                 )
+                and _is_recent_event(datetime.fromisoformat(event["timestamp"]), self.clock())
             ],
             "relevant_memories": [memory.to_context() for memory in memories],
             "working_memory": (
@@ -373,14 +390,19 @@ class RagMemoryContextService:
     def update_behavior_preference(
         self, user_id: str, memory_id: str, value: dict[str, str]
     ) -> None:
+        self.get_memory_context(user_id, "")
         self.base_service.update_behavior_preference(user_id, memory_id, value)
+        self.get_memory_context(user_id, "")
 
     def set_behavior_preference_status(
         self, user_id: str, memory_id: str, status: MemoryStatus
     ) -> None:
+        self.get_memory_context(user_id, "")
         self.base_service.set_behavior_preference_status(user_id, memory_id, status)
+        self.get_memory_context(user_id, "")
 
     def forget_memory(self, user_id: str, memory_id: str) -> None:
+        self.get_memory_context(user_id, "")
         context = self.base_service.get_memory_context(user_id, "")
         preference = next(
             (
@@ -392,9 +414,28 @@ class RagMemoryContextService:
         )
         if preference is None:
             raise KeyError(f"Unknown learned memory: {memory_id}")
-        evidence_ids = preference.get("evidence_event_ids", [])
+        evidence_ids = set(preference.get("evidence_event_ids", []))
+        for version in self.history_store.list_versions(user_id):
+            if version["memory_id"] == memory_id:
+                evidence_ids.update(version["snapshot"]["evidence_event_ids"])
         self.rag_store.suppress_sources(user_id, evidence_ids)
         self.base_service.forget_memory(user_id, memory_id)
+        self.get_memory_context(user_id, "")
+
+    def get_preference_history(self, user_id: str) -> list[dict[str, Any]]:
+        self.get_memory_context(user_id, "")
+        return self.history_store.list_versions(user_id)
+
+    def list_long_term_summaries(self, user_id: str) -> list[dict[str, Any]]:
+        self.get_memory_context(user_id, "")
+        return self.rag_store.list_documents(user_id, summaries_only=True)
+
+    def review_long_term_summary(self, user_id: str, memory_id: str,
+                                 decision: Literal["keep", "archive"], *, expected_review_token: str) -> None:
+        # Refresh first: a preference may have changed while a review form was open.
+        self.get_memory_context(user_id, "")
+        self.rag_store.review_summary(user_id, memory_id, decision,
+                                     expected_review_token=expected_review_token)
 
     def begin_session(
         self,
@@ -455,6 +496,7 @@ class RagMemoryContextService:
             and not self.rag_store.is_source_consolidated(
                 clean_user_id, event.event_id
             )
+            and _is_recent_event(event.timestamp, self.clock())
         ][-limit:]
         if len(events) < 2:
             return None
@@ -498,6 +540,7 @@ class RagMemoryContextService:
         if any(
             self.rag_store.is_source_suppressed(clean_user_id, event.event_id)
             or self.rag_store.is_source_consolidated(clean_user_id, event.event_id)
+            or not _is_recent_event(event.timestamp, self.clock())
             for event in events
         ):
             raise MemoryConsolidationError(
@@ -511,15 +554,16 @@ class RagMemoryContextService:
         )
         source_ids = preview.source_ids
         digest = sha256("|".join(source_ids).encode("utf-8")).hexdigest()[:24]
+        self.get_memory_context(clean_user_id, "")
         document = MemoryDocument(
-            memory_id=f"llm-summary:{digest}",
+            memory_id=f"llm-summary:{sha256(clean_user_id.encode()).hexdigest()[:12]}:{digest}",
             user_id=clean_user_id,
             memory_type="episode",
             status="active",
             title=reviewed_summary.title,
             content=reviewed_summary.summary,
             source_ids=source_ids,
-            tags=("llm-summary",),
+            tags=("llm-summary",) + tuple(sorted({f"activity:{event.activity_type}" for event in events})),
             confidence=1.0,
             importance=reviewed_summary.importance,
             occurred_at=max(event.timestamp for event in events),
@@ -568,7 +612,7 @@ class RagMemoryContextService:
                     memory_id=f"edit-event:{event.event_id}",
                     user_id=user_id,
                     memory_type="episode",
-                    status="candidate",
+                    status="candidate" if _is_recent_event(event.timestamp, self.clock()) else "expired",
                     title=f"Planning feedback: {event.activity_type}",
                     content=content,
                     source_ids=(event.event_id, event.source_plan_id),
@@ -610,7 +654,13 @@ def _memory_id(preference: BehaviorPreference) -> str:
     return str(uuid5(NAMESPACE_URL, f"genshin-agent-memory:{identity}"))
 
 
-def _relevant_events(events: list[EditEvent], goal: str) -> list[EditEvent]:
+def _is_recent_event(timestamp: datetime, now: datetime) -> bool:
+    return now - CANDIDATE_MEMORY_RETENTION < timestamp <= now
+
+
+def _relevant_events(events: list[EditEvent], goal: str, *, now: datetime | None = None) -> list[EditEvent]:
+    current_time = now or datetime.now(timezone.utc)
+    events = [event for event in events if _is_recent_event(event.timestamp, current_time)]
     if not goal.strip():
         return events[-20:]
     goal_tokens = set(re.findall(r"[a-z0-9]+", goal.casefold()))
